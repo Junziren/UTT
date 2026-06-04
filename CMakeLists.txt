@@ -22,10 +22,11 @@ set(UTT_SOURCES
     src/recorder/AudioRecorder.cpp
     src/gui/theme/UTTLookAndFeel.cpp
     src/gui/theme/ThemeLoader.cpp
+    src/gui/AboutComponent.cpp
 )
 
 juce_add_plugin(UTT
-    COMPANY_NAME "UTT"
+    COMPANY_NAME "UnpureBloom"
     PLUGIN_MANUFACTURER_CODE UT01
     PLUGIN_CODE UT02
     FORMATS VST3
@@ -36,8 +37,8 @@ juce_add_plugin(UTT
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
     COPY_PLUGIN_AFTER_BUILD TRUE
-    PLUGIN_MANUFACTURER "UTT Tools"
-    PLUGIN_DESCRIPTION "Utility Toolbox"
+    PLUGIN_MANUFACTURER "UnpureBloom"
+    PLUGIN_DESCRIPTION "UTT - Utility Toolbox by UnpureBloom"
 )
 
 target_sources(UTT PRIVATE ${UTT_SOURCES})

@@ -89,6 +89,14 @@ UTTEditor::UTTEditor(UTTProcessor& p) : AudioProcessorEditor(&p), processor(p), 
         applyTheme(idx);
     };
     addAndMakeVisible(themeCombo);
+
+    aboutBtn.setButtonText("?");
+    aboutBtn.setTooltip("About UTT");
+    addAndMakeVisible(aboutBtn);
+    aboutBtn.onClick = [this]() { aboutOverlay.setVisible(!aboutOverlay.isVisible()); if (aboutOverlay.isVisible()) aboutOverlay.toFront(false); };
+
+    addAndMakeVisible(aboutOverlay);
+    aboutOverlay.setVisible(false);
     addComboAttach("themeIndex", themeCombo);
 
     // ── Input ────────────────────────────────────────────
@@ -230,6 +238,10 @@ void UTTEditor::resized()
 
     // Theme combo (right-aligned, on header line)
     auto hdrLine = juce::Rectangle<int>(a.getX(), 4, a.getRight() - 4, 22);
+    aboutBtn.setBounds(hdrLine.removeFromRight(24));
+    hdrLine.removeFromRight(4);
+    aboutBtn.setBounds(hdrLine.removeFromRight(24));
+    hdrLine.removeFromRight(4);
     themeCombo.setBounds(hdrLine.removeFromRight(130));
 
     a.removeFromTop(4);
@@ -294,6 +306,8 @@ void UTTEditor::resized()
     browseBtn.setBounds(rec.removeFromLeft(70));
     rec.removeFromLeft(4);
     pathLabel.setBounds(rec);
+
+    aboutOverlay.setBounds(getLocalBounds());
 }
 
 // ================================================================

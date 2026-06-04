@@ -3,6 +3,7 @@
 #include "gui/theme/UTTLookAndFeel.h"
 #include "gui/theme/ThemeLoader.h"
 #include "gui/controls/Controls.h"
+#include "gui/AboutComponent.h"
 
 class UTTProcessor;
 
@@ -24,6 +25,8 @@ private:
     // Header
     juce::Label titleLabel;
     juce::ComboBox themeCombo;
+    juce::TextButton aboutBtn;
+    AboutComponent aboutOverlay;
 
     // Input section
     juce::GroupComponent inputGroup;
