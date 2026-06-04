@@ -76,3 +76,4 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE(UTTEditor)
 };
+

@@ -39,7 +39,7 @@ void AudioRecorder::startRecording()
         fileStream.get(),
         sampleRate,
         2,
-        16,
+        32,          // 32-bit float, matches VST3 host internal format
         {},
         0));
 
@@ -65,3 +65,4 @@ void AudioRecorder::process(const juce::AudioBuffer<float>& buffer)
 }
 
 } // namespace UTT
+

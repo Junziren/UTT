@@ -14,6 +14,16 @@ public:
     void process(const juce::AudioBuffer<float>& buffer);
     bool isRecording() const { return recording; }
 
+    // Generate default recording path: <Music>/UTT Sampled/UTT_<timestamp>.wav
+    static juce::File getDefaultPath()
+    {
+        auto dir = juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                       .getChildFile("UTT Sampled");
+        dir.createDirectory();
+        auto ts = juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
+        return dir.getChildFile("UTT_" + ts + ".wav");
+    }
+
 private:
     double sampleRate = 44100.0;
     juce::File outputFile;
@@ -24,3 +34,4 @@ private:
 };
 
 } // namespace UTT
+
