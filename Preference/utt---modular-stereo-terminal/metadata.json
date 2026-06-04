@@ -1,0 +1,8 @@
+{
+  "name": "UTT - Modular Stereo Terminal",
+  "description": "A precision-engineered stereo utility featuring a polar vector visualizer, multiband imaging, analog saturation, and comprehensive M/S routing matrix wrapped in a minimalist industrial white interface.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

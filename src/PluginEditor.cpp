@@ -26,8 +26,7 @@ void UTTEditor::applyTheme(int index)
     if (lf)
     {
         auto& t = lf->getTheme();
-        uttLookAndFeel.setTheme(t);
-        applyThemeToAll(t);
+        uttLookAndFeel.setTheme(t); repaint();
     }
 }
 
@@ -299,3 +298,5 @@ void UTTEditor::paint(juce::Graphics& g)
 {
     g.fillAll(uttLookAndFeel.getTheme().background);
 }
+
+

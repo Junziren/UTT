@@ -1,0 +1,166 @@
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+UTTProcessor::UTTProcessor()
+    : apvts(*this, nullptr, "UTT_PARAMS", UTT::createParameterLayout())
+{
+}
+
+UTTProcessor::~UTTProcessor() = default;
+
+void UTTProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+{
+    dcOffset.prepare(sampleRate, samplesPerBlock);
+    phaseProc.prepare(sampleRate, samplesPerBlock);
+    gainStage.prepare(sampleRate, samplesPerBlock);
+    msProc.prepare(sampleRate, samplesPerBlock);
+    channelProc.prepare(sampleRate, samplesPerBlock);
+    panner.prepare(sampleRate, samplesPerBlock);
+    metering.prepare(sampleRate, samplesPerBlock);
+    phaseMeter.prepare(sampleRate, samplesPerBlock);
+    oscilloscope.prepare(sampleRate, samplesPerBlock);
+    lufsMeter.prepare(sampleRate, samplesPerBlock);
+    recorder.prepare(sampleRate, samplesPerBlock);
+}
+
+void UTTProcessor::releaseResources()
+{
+    dcOffset.reset();
+    phaseProc.reset();
+    gainStage.reset();
+    msProc.reset();
+    channelProc.reset();
+    panner.reset();
+    metering.reset();
+    phaseMeter.reset();
+    oscilloscope.reset();
+    lufsMeter.reset();
+    recorder.reset();
+}
+
+void UTTProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    juce::ScopedNoDenormals noDenormals;
+
+    if (buffer.getNumChannels() < 2)
+        return;
+
+    auto& params = apvts;
+
+    // 1. DC Offset
+    if (!params.getRawParameterValue("dcOffsetBypass")->load())
+        dcOffset.process(buffer);
+
+    // 2. Phase (invert + offset)
+    bool invL = params.getRawParameterValue("phaseInvertL")->load() > 0.5f;
+    bool invR = params.getRawParameterValue("phaseInvertR")->load() > 0.5f;
+    float phaseDeg = params.getRawParameterValue("phaseOffset")->load();
+    phaseProc.setInvert(invL, invR);
+    phaseProc.setPhaseOffset(phaseDeg);
+    phaseProc.process(buffer);
+
+    // 3. Gain (linked L/R)
+    float gainDB = params.getRawParameterValue("gain")->load();
+    gainStage.setGain(gainDB);
+    gainStage.process(buffer);
+
+    // 4. MS Encode/Decode
+    int msMode = static_cast<int>(params.getRawParameterValue("msMode")->load());
+    msProc.setMode(msMode);
+    msProc.process(buffer);
+
+    // 5. Mono operations
+    int monoMode = static_cast<int>(params.getRawParameterValue("monoMode")->load());
+    channelProc.setMonoMode(monoMode);
+    channelProc.process(buffer);
+
+    // 6. Stereo separation
+    float separation = params.getRawParameterValue("stereoSeparation")->load();
+    channelProc.setSeparation(separation);
+
+    // 7. Mono to stereo copy
+    int m2s = static_cast<int>(params.getRawParameterValue("monoToStereo")->load());
+    channelProc.setMonoToStereo(m2s);
+    channelProc.processPostSeparation(buffer);
+
+    // 8. Channel swap
+    bool swap = params.getRawParameterValue("channelSwap")->load() > 0.5f;
+    if (swap) channelProc.swap(buffer);
+
+    // 9. Pan
+    float panVal = params.getRawParameterValue("pan")->load();
+    panner.setPan(panVal);
+    panner.process(buffer);
+
+    // 10. Output stage
+    float outLGain = params.getRawParameterValue("outputLGain")->load();
+    float outRGain = params.getRawParameterValue("outputRGain")->load();
+    bool muteL = params.getRawParameterValue("outputLMute")->load() > 0.5f;
+    bool muteR = params.getRawParameterValue("outputRMute")->load() > 0.5f;
+    bool soloL = params.getRawParameterValue("outputLSolo")->load() > 0.5f;
+    bool soloR = params.getRawParameterValue("outputRSolo")->load() > 0.5f;
+    gainStage.setOutputStage(outLGain, outRGain, muteL, muteR, soloL, soloR);
+    gainStage.processOutputStage(buffer);
+
+    // Metering
+    metering.process(buffer);
+    phaseMeter.process(buffer);
+    oscilloscope.process(buffer);
+    lufsMeter.process(buffer);
+
+    params.getRawParameterValue("meterLPeak")->store(metering.getLPeak());
+    params.getRawParameterValue("meterRPeak")->store(metering.getRPeak());
+    params.getRawParameterValue("meterLRMS")->store(metering.getLRMS());
+    params.getRawParameterValue("meterRRMS")->store(metering.getRRMS());
+    params.getRawParameterValue("phaseCorrelation")->store(phaseMeter.getCorrelation());
+    params.getRawParameterValue("lufsMomentary")->store(lufsMeter.getMomentary());
+    params.getRawParameterValue("lufsShortTerm")->store(lufsMeter.getShortTerm());
+    params.getRawParameterValue("lufsIntegrated")->store(lufsMeter.getIntegrated());
+
+    // Recording
+    bool recEnable = params.getRawParameterValue("recordEnable")->load() > 0.5f;
+    if (recEnable && recordPath.isNotEmpty())
+    {
+        recorder.setPath(juce::File(recordPath));
+        recorder.startRecording();
+        recorder.process(buffer);
+    }
+    else
+    {
+        recorder.stopRecording();
+    }
+}
+
+juce::AudioProcessorEditor* UTTProcessor::createEditor()
+{
+    return new UTTEditor(*this);
+}
+
+void UTTProcessor::getStateInformation(juce::MemoryBlock& destData)
+{
+    auto state = apvts.copyState();
+    state.setProperty("recordPath", recordPath, nullptr);
+    state.setProperty("customThemePath", customThemePath, nullptr);
+    std::unique_ptr<juce::XmlElement> xml(state.createXml());
+    copyXmlToBinary(*xml, destData);
+}
+
+void UTTProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
+    if (xml && xml->hasTagName(apvts.state.getType()))
+    {
+        apvts.replaceState(juce::ValueTree::fromXml(*xml));
+    }
+    if (xml)
+    {
+        auto state = juce::ValueTree::fromXml(*xml);
+        recordPath = state.getProperty("recordPath", "");
+        customThemePath = state.getProperty("customThemePath", "");
+    }
+}
+
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new UTTProcessor();
+}

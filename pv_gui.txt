@@ -1,0 +1,34 @@
+Started validating: C:\Program Files\Common Files\VST3\UTT.vst3
+Random seed: 0x508a7f6
+Validation started
+Strictness level: 5
+-----------------------------------------------------------------
+Starting tests in: pluginval / Scan for plugins located in: C:\Program Files\Common Files\VST3\UTT.vst3...
+Num plugins found: 1
+
+Testing plugin: VST3-UTT-f361fbd4-ee1c38c0
+UTT: UTT v0.1.0
+Completed tests in pluginval / Scan for plugins located in: C:\Program Files\Common Files\VST3\UTT.vst3
+-----------------------------------------------------------------
+Starting tests in: pluginval / Open plugin (cold)...
+Completed tests in pluginval / Open plugin (cold)
+-----------------------------------------------------------------
+Starting tests in: pluginval / Open plugin (warm)...
+Running tests 1 times
+Completed tests in pluginval / Open plugin (warm)
+-----------------------------------------------------------------
+Starting tests in: pluginval / Plugin info...
+
+Plugin name: UTT
+Alternative names: UTT
+SupportsDoublePrecision: no
+Reported latency: 0
+Reported taillength: 0
+Completed tests in pluginval / Plugin info
+-----------------------------------------------------------------
+Starting tests in: pluginval / Plugin programs...
+Num programs: 0
+All program names checked
+Completed tests in pluginval / Plugin programs
+-----------------------------------------------------------------
+Starting tests in: pluginval / Editor...

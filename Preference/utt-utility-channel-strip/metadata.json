@@ -1,0 +1,8 @@
+{
+  "name": "UTT Utility Channel Strip",
+  "description": "UTT is a vintage utility channel strip VST3 plugin simulation featuring gain, panning, phase manipulation, stereo controls, level/loudness/phase meters, oscilloscope, and parameter automation.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

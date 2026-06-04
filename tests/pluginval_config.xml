@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PLUGINVAL>
+    <HEADER
+        name="UTT"
+        pluginIdentifier="UTT"
+        manufacturer="UTT Tools"
+        version="0.1.0"
+        testAllCombinations="false"
+        strictnessLevel="5"/>
+
+    <PLUGINS>
+        <PLUGIN path="C:/Program Files/Common Files/VST3/UTT.vst3"/>
+    </PLUGINS>
+
+    <BUFFER_SIZE_CHECKS maxBufferSize="2048"/>
+
+    <VALIDATION_CHECK type="Always">
+        <AUTOMATION_TEST numParameters="32" duration="2.0" interval="0.2"/>
+    </VALIDATION_CHECK>
+</PLUGINVAL>

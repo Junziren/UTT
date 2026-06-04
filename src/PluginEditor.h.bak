@@ -1,0 +1,21 @@
+#pragma once
+#include <JuceHeader.h>
+
+class UTTProcessor;
+
+class UTTEditor : public juce::AudioProcessorEditor,
+                  public juce::Timer
+{
+public:
+    explicit UTTEditor(UTTProcessor& p);
+    ~UTTEditor() override;
+    void paint(juce::Graphics& g) override;
+    void resized() override;
+    void timerCallback() override;
+
+private:
+    UTTProcessor& processor;
+    std::unique_ptr<juce::Label> titleLabel;
+
+    JUCE_DECLARE_NON_COPYABLE(UTTEditor)
+};
