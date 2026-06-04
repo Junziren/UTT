@@ -1,3 +1,5 @@
+#include "util/CrashLog.h"
+#include "util/TraceLog.h"
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "Parameters.h"
@@ -58,6 +60,7 @@ UTTEditor::UTTEditor(UTTProcessor& p) : AudioProcessorEditor(&p), processor(p), 
     outLSoloBtn("Solo L"), outRSoloBtn("Solo R"),
     recordEnableBtn("Rec")
 {
+    UTT_TRACE();
     setLookAndFeel(&uttLookAndFeel);
     setSize(920, 660);
 
@@ -173,6 +176,33 @@ UTTEditor::UTTEditor(UTTProcessor& p) : AudioProcessorEditor(&p), processor(p), 
         if (auto* p = apvts.getParameter("recordEnable")) p->setValueNotifyingHost(on ? 1.0f : 0.0f);
     };
 
+
+    browseBtn.setButtonText("Browse...");
+    addAndMakeVisible(browseBtn);
+    browseBtn.onClick = [this]() {
+        UTT_LOG("Browse button clicked");
+        auto fc = std::make_shared<juce::FileChooser>(
+            "Save recording as...",
+            juce::File::getSpecialLocation(juce::File::userMusicDirectory),
+            "*.wav");
+        fc->launchAsync(
+            juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+            [this, fc](const juce::FileChooser& chooser) {
+                auto result = chooser.getResult();
+                if (result != juce::File()) {
+                    if (result.getFileExtension().isEmpty())
+                        result = result.withFileExtension(".wav");
+                    processor.setRecordPath(result.getFullPathName());
+                    pathLabel.setText(result.getFileName(), juce::dontSendNotification);
+                }
+            });
+    };
+
+    pathLabel.setText("", juce::dontSendNotification);
+    pathLabel.setFont(11.0f);
+    pathLabel.setColour(juce::Label::textColourId, theme.textSecondary);
+    addAndMakeVisible(pathLabel);
+
     startTimerHz(20);
 }
 
@@ -181,6 +211,7 @@ UTTEditor::UTTEditor(UTTProcessor& p) : AudioProcessorEditor(&p), processor(p), 
 // ================================================================
 UTTEditor::~UTTEditor()
 {
+    UTT_TRACE();
     setLookAndFeel(nullptr);
     stopTimer();
 }
@@ -190,6 +221,7 @@ UTTEditor::~UTTEditor()
 // ================================================================
 void UTTEditor::resized()
 {
+    UTT_TRACE();
     auto a = getLocalBounds().reduced(8);
     auto w = a.getWidth();
 
@@ -256,14 +288,20 @@ void UTTEditor::resized()
 
     // Recording
     recordGroup.setBounds(a);
-    recordEnableBtn.setBounds(a.reduced(8).withTrimmedTop(18));
+    auto rec = a.reduced(8).withTrimmedTop(18);
+    recordEnableBtn.setBounds(rec.removeFromLeft(40));
+    rec.removeFromLeft(4);
+    browseBtn.setBounds(rec.removeFromLeft(70));
+    rec.removeFromLeft(4);
+    pathLabel.setBounds(rec);
 }
 
 // ================================================================
-// Timer — update meters and sync button states
+// Timer - update meters and sync button states
 // ================================================================
 void UTTEditor::timerCallback()
 {
+    UTT_TRACE();
     // Sync LedButton states with parameters
     if (auto* p = apvts.getRawParameterValue("dcOffsetBypass")) dcOffsetBtn.setState(p->load() > 0.5f);
     if (auto* p = apvts.getRawParameterValue("phaseInvertL"))   phaseInvL.setState(p->load() > 0.5f);

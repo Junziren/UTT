@@ -1,3 +1,5 @@
+#include "util/CrashLog.h"
+#include "util/TraceLog.h"
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
@@ -7,6 +9,7 @@ UTTProcessor::UTTProcessor()
           .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "UTT_PARAMS", UTT::createParameterLayout())
 {
+    UTT_TRACE();
 }
 
 UTTProcessor::~UTTProcessor() = default;
@@ -32,6 +35,7 @@ bool UTTProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 
 void UTTProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
+    UTT_TRACE();
     dcOffset.prepare(sampleRate, samplesPerBlock);
     phaseProc.prepare(sampleRate, samplesPerBlock);
     gainStage.prepare(sampleRate, samplesPerBlock);
@@ -187,6 +191,7 @@ void UTTProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuff
 
 juce::AudioProcessorEditor* UTTProcessor::createEditor()
 {
+    UTT_TRACE();
     return new UTTEditor(*this);
 }
 
@@ -201,6 +206,7 @@ void UTTProcessor::getStateInformation(juce::MemoryBlock& destData)
 
 void UTTProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
+    UTT_TRACE();
     std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
     if (xml && xml->hasTagName(apvts.state.getType()))
     {
@@ -216,15 +222,6 @@ void UTTProcessor::setStateInformation(const void* data, int sizeInBytes)
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
+    UTT::installCrashHandler();
     return new UTTProcessor();
 }
-
-
-
-
-
-
-
-
-
-

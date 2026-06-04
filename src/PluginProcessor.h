@@ -38,7 +38,7 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
-    void setRecordPath(const juce::String& path) { recordPath = path; }
+    void setRecordPath(const juce::String& path) { recordPath = path; recorder.setPath(juce::File(path)); }
     juce::String getRecordPath() const { return recordPath; }
     void setCustomThemePath(const juce::String& path) { customThemePath = path; }
     juce::String getCustomThemePath() const { return customThemePath; }

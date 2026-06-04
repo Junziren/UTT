@@ -55,6 +55,8 @@ private:
     // Recording
     juce::GroupComponent recordGroup;
     LedButton recordEnableBtn;
+    juce::TextButton browseBtn;
+    juce::Label pathLabel;
 
     // APVTS attachments
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> sliderAttachments;

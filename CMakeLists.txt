@@ -41,7 +41,7 @@ juce_add_plugin(UTT
 )
 
 target_sources(UTT PRIVATE ${UTT_SOURCES})
-target_include_directories(UTT PRIVATE src)
+target_include_directories(UTT PRIVATE src src/util)
 target_link_libraries(UTT PRIVATE juce::juce_audio_formats)
 
 target_compile_definitions(UTT PRIVATE
