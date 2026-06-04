@@ -26,6 +26,9 @@ void AudioRecorder::startRecording()
     if (recording || outputFile.getFullPathName().isEmpty())
         return;
 
+    // Ensure parent directory exists
+    outputFile.getParentDirectory().createDirectory();
+
     outputFile.deleteFile();
     fileStream = std::make_unique<juce::FileOutputStream>(outputFile);
     if (fileStream->failedToOpen())
@@ -65,4 +68,5 @@ void AudioRecorder::process(const juce::AudioBuffer<float>& buffer)
 }
 
 } // namespace UTT
+
 

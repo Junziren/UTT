@@ -64,19 +64,6 @@ void UTTProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuff
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // DEBUG: Write processBlock calls to a log file
-    static int callCount = 0;
-    if (callCount < 10)
-    {
-        auto logFile = juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-                           .getChildFile("utt_debug.log");
-        logFile.appendText("pb #" + juce::String(++callCount)
-            + " ch=" + juce::String(buffer.getNumChannels())
-            + " n=" + juce::String(buffer.getNumSamples())
-            + " sr=" + juce::String(getSampleRate())
-            + "\n");
-    }
-
     auto numChannels = buffer.getNumChannels();
     if (numChannels == 0)
         return;
@@ -231,4 +218,7 @@ juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new UTTProcessor();
 }
+
+
+
 
