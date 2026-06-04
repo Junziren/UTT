@@ -30,6 +30,8 @@ juce_add_plugin(UTT
     PLUGIN_MANUFACTURER_CODE UT01
     PLUGIN_CODE UT02
     FORMATS VST3
+    # Uncomment for macOS Audio Unit support:
+    # FORMATS VST3 AU
     PRODUCT_NAME "UTT"
     VERSION "0.1.0"
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE

@@ -1,9 +1,25 @@
 #pragma once
-#include <windows.h>
+#include <JuceHeader.h>
+#include <fstream>
+#include <mutex>
+#include <thread>
+#include <cstdio>
+
+// ================================================================
+// Cross-platform crash & trace logging for UTT plugin
+// ================================================================
+
+#ifdef _WIN32
+  #include <windows.h>
+#else
+  #include <signal.h>
+  #include <execinfo.h>
+#endif
 
 namespace UTT {
 
-// Writes exception info to D:\UTT\crash_log.txt before crash
+// -- crash handler --------------------------------------------------
+#ifdef _WIN32
 inline void installCrashHandler()
 {
     static bool installed = false;
@@ -11,24 +27,69 @@ inline void installCrashHandler()
     installed = true;
 
     ::AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS* ex) -> LONG {
-        // Only handle fatal exceptions
         DWORD code = ex->ExceptionRecord->ExceptionCode;
-        if (code == 0xE06D7363) // C++ exception
-            return EXCEPTION_CONTINUE_SEARCH;
-
-        auto f = ::CreateFileA("D:\\UTT\\crash_log.txt", GENERIC_WRITE, 0,
-                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (f != INVALID_HANDLE_VALUE) {
-            ::SetFilePointer(f, 0, nullptr, FILE_END);
-            char buf[256];
-            int len = wsprintfA(buf, "CRASH: code=0x%08X addr=0x%p\r\n",
-                                code, ex->ExceptionRecord->ExceptionAddress);
-            DWORD written;
-            ::WriteFile(f, buf, len, &written, nullptr);
-            ::CloseHandle(f);
-        }
+        if (code == 0xE06D7363) return EXCEPTION_CONTINUE_SEARCH;
+        auto f = std::ofstream(
+            juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+                .getChildFile("utt_crash_log.txt").getFullPathName().toStdString(),
+            std::ios::app);
+        if (f.is_open())
+            f << "CRASH: code=0x" << std::hex << code
+              << " addr=" << ex->ExceptionRecord->ExceptionAddress << std::endl;
         return EXCEPTION_CONTINUE_SEARCH;
     });
 }
+#else
+inline void crashSignalHandler(int sig)
+{
+    auto f = std::ofstream(
+        juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+            .getChildFile("utt_crash_log.txt").getFullPathName().toStdString(),
+        std::ios::app);
+    if (f.is_open()) {
+        f << "CRASH: signal=" << sig << "\n";
+        void* stack[32];
+        int frames = backtrace(stack, 32);
+        char** symbols = backtrace_symbols(stack, frames);
+        for (int i = 0; i < frames && symbols; ++i)
+            f << "  " << (symbols[i] ? symbols[i] : "???") << "\n";
+        free(symbols);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+inline void installCrashHandler()
+{
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+    signal(SIGSEGV, crashSignalHandler);
+    signal(SIGBUS,  crashSignalHandler);
+    signal(SIGABRT, crashSignalHandler);
+}
+#endif
+
+// -- trace logger ---------------------------------------------------
+inline void debugTrace(const char* msg)
+{
+    static std::mutex mtx;
+    std::lock_guard<std::mutex> lock(mtx);
+    auto f = std::ofstream(
+        juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
+            .getChildFile("utt_trace.log").getFullPathName().toStdString(),
+        std::ios::app);
+    if (f.is_open())
+        f << "[" << std::this_thread::get_id() << "] " << msg << std::endl;
+}
+
+struct ScopedTrace {
+    const char* func;
+    ScopedTrace(const char* f) : func(f) { debugTrace((std::string("> ") + func).c_str()); }
+    ~ScopedTrace() { debugTrace((std::string("< ") + func).c_str()); }
+};
 
 } // namespace UTT
+
+#define UTT_TRACE() UTT::ScopedTrace _utt_trace(__FUNCTION__)
+#define UTT_LOG(msg) UTT::debugTrace(msg)

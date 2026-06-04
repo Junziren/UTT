@@ -1,5 +1,5 @@
 #include "util/CrashLog.h"
-#include "util/TraceLog.h"
+
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "Parameters.h"
