@@ -1,0 +1,3 @@
+[submodule "juce"]
+	path = juce
+	url = https://gitee.com/mirrors/JUCE.git
