@@ -28,9 +28,8 @@ UTTLookAndFeel::UTTLookAndFeel(const UTTTheme& t) : theme(t)
 
 void UTTLookAndFeel::setTheme(const UTTTheme& t)
 {
+    // Theme colours are read directly from struct in draw methods — no setColour needed
     theme = t;
-    setColour(juce::ResizableWindow::backgroundColourId, theme.background);
-    setDefaultSansSerifTypefaceName(theme.fontMain);
 }
 
 // ================================================================
@@ -263,4 +262,5 @@ void UTTLookAndFeel::drawTextEditorOutline(juce::Graphics& g, int w, int h,
     g.setColour(theme.border);
     g.drawRoundedRectangle(0.5f, 0.5f, (float)w - 1.0f, (float)h - 1.0f, 4.0f, 1.5f);
 }
+
 
