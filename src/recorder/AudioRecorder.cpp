@@ -26,10 +26,9 @@ void AudioRecorder::startRecording()
     if (recording || outputFile.getFullPathName().isEmpty())
         return;
 
-    // Ensure parent directory exists
     outputFile.getParentDirectory().createDirectory();
-
     outputFile.deleteFile();
+
     fileStream = std::make_unique<juce::FileOutputStream>(outputFile);
     if (fileStream->failedToOpen())
     {
@@ -42,12 +41,14 @@ void AudioRecorder::startRecording()
         fileStream.get(),
         sampleRate,
         2,
-        32,          // 32-bit float, matches VST3 host internal format
+        24,
         {},
         0));
 
     if (writer)
         recording = true;
+    else
+        fileStream.reset();  // Writer creation failed, close the file
 }
 
 void AudioRecorder::stopRecording()
@@ -68,5 +69,3 @@ void AudioRecorder::process(const juce::AudioBuffer<float>& buffer)
 }
 
 } // namespace UTT
-
-
