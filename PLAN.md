@@ -1,266 +1,94 @@
-# UTT VST3 插件 — 开发计划 (v2)
+# UTT VST3 插件 — 开发计划 (v3)
+
+> v3 取代 v2 计划（2026-08-22）。v2 描述的 SSL/API 主题系统与原生 JUCE GUI 已在 v0.3.0 退役，
+> 相关实现归档于 `legacy/`。
 
 ## 摘要
 
-UTT 是一款音频工具集合型 VST3 插件，采用 JUCE 框架 (GPLv3)，默认主题为模拟 SSL/API 风格通道条硬件。信号链路固定顺序，每个模块可独立旁通。L/R 声道在输出级各有独立 Mute/Solo 和增益控制。内置 3 套可切换主题，同时支持外部 JSON 主题文件加载。
+UTT 是一款音频工具集合型 VST3 插件（JUCE 8.0.13 / C++17 / GPLv3），面向
+House/Techno 制作与混音的立体声通道条工具。v0.3.0 完成 DSP 正确性重写与
+WebView2 纸面仪器 UI，并为 Apple AUv3 车道完成代码与构建预备。
+
+- 参数合同真源：`config/parameters-v2.json`（17+1 参数，ID 顺序为发布 ABI）
+- 标识符冻结合同：`docs/IDENTIFIERS.md`
+- Apple 车道（UNVERIFIED）：`docs/APPLE_LANE.md`
 
 ## 技术选型
 
 | 项 | 方案 |
 |---|---|
-| 框架 | JUCE 8.x (Git submodule) |
+| 框架 | JUCE 8.0.13（仓库内 vendored） |
 | 许可证 | GPLv3 |
-| 构建 | CMake 4.0 + MSVC 2022 (VsDevCmd.bat) |
-| GUI | JUCE 原生 Component + 自定义 LookAndFeel |
-| 最低 C++ | C++17 |
-| 插件格式 | VST3 (JUCE 自动生成) |
+| 构建 | CMake ≥3.22 + Ninja + MSVC 2022（需 vcvars64 环境） |
+| GUI | WebView2 离线内嵌（`resources/ui/`，juce_add_binary_data 打包；无运行时时降级原生极简面板） |
+| 插件格式 | Windows/Linux: VST3 + Standalone；macOS: VST3 + AU + AUv3；iOS: AUv3 + Standalone |
+| 测试 | juce::UnitTest 控制台跑（`UTTTests`，12830 断言） |
+| 验证 | pluginval strictness 10（系统安装副本） |
 
 ## 信号处理链路 (固定顺序)
 
 ```
-Input L/R
-  → [1] DC Offset Removal        (Bypass/On, 一阶HPF @5Hz)
-  → [2] Phase Invert             (L/R 独立开关 ×-1)
-  → [3] Phase Offset             (0°~360°, 一阶全通滤波器)
-  → [4] Gain (Linked)            (-∞ ~ +24dB, L/R 联动)
-  → [5] MS Encode/Decode         (Bypass/Encode/Decode)
-  → [6] Mono Operations          (Off/L+R Sum/Mid Only/Side Only)
-  → [7] Stereo Separation        (0%~100%, M/S权重调节)
-  → [8] Mono→Stereo Copy         (Off/L→Both/R→Both)
-  → [9] Channel Swap             (Off/On, 交换L/R)
-  → [10] Pan                     (-100~+100, 正弦/余弦法则)
-  → [11] Output Stage
-       ├─ L Gain (-∞~+12dB) + Mute + Solo
-       └─ R Gain (-∞~+12dB) + Mute + Solo
+Input L/R（入口 NaN/Inf 清洗；mono 输入复制到立体声 scratch，预分配分块处理）
+  → [1] DC Offset Removal        (Bypass/On，一阶 HPF)
+  → [2] Phase Invert             (L/R 独立 ×-1)
+  → [3] Phase Offset             (0°~360°，两节级联一阶全通，1kHz 参考闭式解，
+                                  系数随采样率补偿；0° 硬旁路 bit-exact)
+  → [4] Gain                     (-96~+24dB，SmoothedValue ~10ms)
+  → [5] MS Encode/Decode
+  → [6] Mono Operations          (Off/L+R/Mid/Side)
+  → [7] Stereo Separation        (0~100%，side 增益权重)
+  → [8] Mono→Stereo Copy
+  → [9] Channel Swap
+  → [10] Pan                     (-100~100，中点连续定功率法则)
+  → [11] Output Stage            (L/R Gain -96~+12dB + Mute + Solo，独立平滑)
   → Output L/R
 ```
 
-## 测量模块 (并行，不影响信号)
+实时安全：processBlock 零分配/零锁/零 I/O；录音为后台 writer 线程 + 预分配
+SPSC FIFO（音频线程只入队）；示波器三缓冲发布。
 
-| 模块 | 输出参数 | 实现 |
+## 测量（并行，不影响信号；原子量发布）
+
+- Peak/RMS（L/R，采样率自适应平滑）
+- 相位相关系数
+- LUFS：ITU-R BS.1770-4 / EBU R128（K-weighting 按采样率闭式计算，
+  M 400ms / S 3s / Integrated 带门限，-23 LUFS 校准测试覆盖）
+- 示波器：maxPoints 2048 三缓冲，UI 侧抽稀到 256 点 @12Hz
+
+## UI（FAD Paper Instrument 设计语言适配）
+
+纸色面板 #E8E5DB / chrome #F6F4EC / ink #1C1B14，方角硬边、深色显示井、
+I/0 机械开关、旋钮完整协议（拖拽 320px、Shift 1600px、滚轮 0.01/0.001、
+双击复位、右键宿主菜单、键盘）。原生桥合同 v1 见 `src/gui/UTTWebView.h` 注释：
+值/显示文本/默认值全部 native-authoritative；浏览器预览模拟数据与桥严格隔离。
+
+## v0.3.0 完成状态（2026-08-22）
+
+| 项 | 状态 | 证据 |
 |---|---|---|
-| Peak/RMS Meter | L Peak, R Peak, L RMS, R RMS (dBFS) | 平滑包络跟随器 |
-| Phase Correlation Meter | -1.0 ~ +1.0 | 实时相关系数 |
-| Oscilloscope | 环形缓冲区 (N samples) | 固定长度环形缓冲 |
-| LUFS Meter | Momentary / Short-term / Integrated | EBU R128, K-weighting |
+| Phase A DSP 重写（A1–A9） | ✅ | commit bc5fdf4；12830 单测绿 |
+| Phase B WebView UI | ✅ | commit d49523f；4 视口视觉 QA + Standalone 原生桥冒烟 |
+| Phase C AUv3 预备 | ✅ | commit dd2e8fa；CMake 条件格式 + 沙盒整改 + 两份合同文档 |
+| D3 pluginval strictness 10 | ✅ | 4 次运行 exit=0（含 VST3 validator、自动化测试） |
+| D4/D5 清理 + 0.3.0 + 文档 | ✅ | commit dd2e8fa；-95MB 垃圾、build/ 解除跟踪 |
 
-## 录制模块
+## 明确未完成 / 未验证（后续计划）
 
-- Record Enable 开关 + WAV 文件路径参数
-- PCM WAV 格式，跟随 DAW 采样率/位深度
-- 录制后处理级信号（含 Output Stage）
+| 项 | 层级 | 说明 |
+|---|---|---|
+| DAW 实机手测 | DAW-tested | Live/REAPER 中开编辑器、跑自动化、长时稳定性；本机无 DAW 自动化路径 |
+| 安装器更新 | release-ready | installer/ 仍是 v0.2；需内嵌 WebView2 Evergreen Offline x64 + VC++ runtime，断网 VM 冷装验证 |
+| Apple 全部项 | device-tested | 见 docs/APPLE_LANE.md §4 清单（auval、AUv3 注册、宿主矩阵、内存警告） |
+| 发布产物 | release-ready | 签名、notarization、哈希、Release Notes |
 
----
+## 构建速查
 
-## 文件结构
-
+```powershell
+# 需要 MSVC 环境（vcvars64）与 WebView2 NuGet 包（JUCE 自动发现）
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target UTT        # VST3 + Standalone
+cmake --build build --target UTTTests   # 单元测试
+./build/UTTTests_artefacts/Release/UTTTests.exe
+# 安装副本验证
+./tools/pluginval/pluginval.exe --validate "C:\Program Files\Common Files\VST3\UTT.vst3" --strictness 10
 ```
-D:\UTT\
-├── CMakeLists.txt
-├── juce/                             # JUCE git submodule
-├── src/
-│   ├── PluginProcessor.h/cpp         # AudioProcessor (DSP核心)
-│   ├── PluginEditor.h/cpp            # AudioProcessorEditor (GUI根)
-│   ├── Parameters.h                  # 全部参数ID/范围定义
-│   ├── dsp/
-│   │   ├── DCOffset.h/cpp            # DC偏移移除
-│   │   ├── PhaseProcessor.h/cpp      # 相位反转+偏移
-│   │   ├── GainStage.h/cpp           # 增益(含Output Stage)
-│   │   ├── MSProcessor.h/cpp         # MS编解码
-│   │   ├── ChannelProcessor.h/cpp    # Mono/Swap/Separation/Copy
-│   │   ├── Panner.h/cpp              # 声像
-│   │   ├── Metering.h/cpp            # Peak/RMS电平表
-│   │   ├── PhaseMeter.h/cpp          # 相位相关表
-│   │   ├── Oscilloscope.h/cpp        # 示波器缓冲区
-│   │   └── LUFSMeter.h/cpp           # EBU R128响度测量
-│   ├── recorder/
-│   │   └── AudioRecorder.h/cpp       # WAV录制
-│   └── gui/
-│       ├── ChannelStrip.h/cpp        # 主面板布局
-│       ├── MeterPanel.h/cpp          # 电平表+相位表+示波器
-│       ├── RecordingPanel.h/cpp      # 录制控制
-│       ├── theme/
-│       │   ├── UTTLookAndFeel.h      # 主题基类
-│       │   ├── ChannelStripLNF.h/cpp # 默认: 通道条硬件
-│       │   ├── DarkModernLNF.h/cpp   # 暗色现代
-│       │   ├── RetroLightLNF.h/cpp   # 亮色复古
-│       │   └── ThemeLoader.h/cpp     # JSON主题文件加载
-│       └── controls/
-│           ├── VUKnob.h/cpp          # VU风格旋钮
-│           ├── VUMeter.h/cpp         # VU表
-│           ├── LedButton.h/cpp       # LED指示灯按钮
-│           └── SegmentDisplay.h/cpp  # 段式数字显示
-└── themes/
-    ├── channel_strip.json            # 默认主题配置
-    ├── dark_modern.json
-    └── retro_light.json
-```
-
----
-
-## 参数清单 (共 ~35 个)
-
-### DSP 处理参数
-| # | ID | 类型 | 范围 | 默认 |
-|---|---|---|---|---|
-| 1 | dcOffsetBypass | bool | — | true |
-| 2 | phaseInvertL | bool | — | false |
-| 3 | phaseInvertR | bool | — | false |
-| 4 | phaseOffset | float | 0~360° | 0 |
-| 5 | gain | float | -96~24 dB | 0 |
-| 6 | msMode | int | 0=Bypass/1=Encode/2=Decode | 0 |
-| 7 | monoMode | int | 0=Off/1=L+R/2=Mid/3=Side | 0 |
-| 8 | stereoSeparation | float | 0~100% | 100 |
-| 9 | monoToStereo | int | 0=Off/1=L→Both/2=R→Both | 0 |
-| 10 | channelSwap | bool | — | false |
-| 11 | pan | float | -100~+100 | 0 |
-
-### Output Stage 参数
-| # | ID | 类型 | 范围 | 默认 |
-|---|---|---|---|---|
-| 12 | outputLGain | float | -96~12 dB | 0 |
-| 13 | outputRGain | float | -96~12 dB | 0 |
-| 14 | outputLMute | bool | — | false |
-| 15 | outputRMute | bool | — | false |
-| 16 | outputLSolo | bool | — | false |
-| 17 | outputRSolo | bool | — | false |
-
-### 测量输出参数 (只读)
-| # | ID | 类型 | 范围 |
-|---|---|---|---|
-| 18 | meterLPeak | float | dBFS |
-| 19 | meterRPeak | float | dBFS |
-| 20 | meterLRMS | float | dBFS |
-| 21 | meterRRMS | float | dBFS |
-| 22 | phaseCorrelation | float | -1~+1 |
-| 23 | lufsMomentary | float | LUFS |
-| 24 | lufsShortTerm | float | LUFS |
-| 25 | lufsIntegrated | float | LUFS |
-
-### 录制参数
-| # | ID | 类型 | 范围 | 默认 |
-|---|---|---|---|---|
-| 26 | recordEnable | bool | — | false |
-| 27 | recordPath | String | 文件路径 | "" |
-
-### GUI 参数
-| # | ID | 类型 | 范围 | 默认 |
-|---|---|---|---|---|
-| 28 | themeIndex | int | 0/1/2 | 0 |
-| 29 | customThemePath | String | JSON路径 | "" |
-
----
-
-## Solo 逻辑规则
-
-Solo 优先级高于 Mute。具体行为：
-
-- 无 Solo 激活时：L Mute 静音 L，R Mute 静音 R
-- 仅 L Solo 激活时：输出 L，R 静音（无论 R Mute 状态）
-- 仅 R Solo 激活时：输出 R，L 静音（无论 L Mute 状态）
-- 两个 Solo 同时激活时：行为等同于无 Solo（正常输出）
-
----
-
-## 主题系统设计
-
-### 内置主题
-
-1. **ChannelStripLNF (默认)** — 模拟 SSL 9000/API 2500 风格
-   - 深灰色金属拉丝背景
-   - VU 表带背光指针
-   - 大号金属旋钮 (仿 API 风格帽盖)
-   - 红色/绿色 LED 指示灯
-   - 段式 LED 电平显示
-   - 字体: 等宽工业风格 (如 Eurostile 替代)
-
-2. **DarkModernLNF** — 扁平暗色现代风格
-   - 深灰/炭黑背景
-   - 细线条电平条
-   - 简洁圆形旋钮
-   - 蓝/青色强调色
-
-3. **RetroLightLNF** — 复古亮色风格
-   - 奶油/米白背景
-   - 仿 Neve 风格蓝色/红色旋钮帽
-   - 传统 VU 表
-   - 暖色调强调
-
-### 外部主题 JSON Schema
-
-```json
-{
-  "name": "My Theme",
-  "colors": {
-    "background": "#2A2A2A",
-    "panelBackground": "#1E1E1E",
-    "textPrimary": "#E0E0E0",
-    "accent": "#FF6600",
-    "vuNeedle": "#FF4400",
-    "vuBacklight": "#FFCC00",
-    "meterLow": "#00FF00",
-    "meterMid": "#FFFF00",
-    "meterHigh": "#FF0000",
-    "buttonOn": "#FF0000",
-    "buttonOff": "#333333",
-    "knobCap": "#C0C0C0",
-    "knobBase": "#555555"
-  },
-  "fonts": {
-    "main": "Eurostile",
-    "mono": "Consolas",
-    "display": "DS-Digital"
-  },
-  "backgroundImage": "path/to/bg.png",
-  "knobStyle": "api"
-}
-```
-
-ThemeLoader 解析 JSON，创建对应的 LookAndFeel 子类实例，应用全部颜色/字体/样式。
-
----
-
-## 开发阶段
-
-### Phase 1 — 项目框架搭建
-- Clone JUCE 作为 git submodule
-- 创建 CMakeLists.txt (juce_add_plugin)
-- 创建最小 PluginProcessor/PluginEditor (直通音频)
-- 验证编译 + DAW 加载
-
-### Phase 2 — 全部 DSP 模块
-- 按信号链路顺序逐一实现每个模块
-- 每模块独立单元测试 (juce::UnitTest)
-- Output Stage 含 Solo/Mute 逻辑
-
-### Phase 3 — 测量系统
-- Peak/RMS 电平表，Phase Correlation Meter
-- Oscilloscope 环形缓冲
-- LUFS (EBU R128) — Momentary/Short-term/Integrated
-
-### Phase 4 — 录制
-- WAV 文件写入 (juce::WavAudioFormat)
-- 录制开关 + 文件路径管理
-
-### Phase 5 — GUI 与主题
-- 主面板布局 (通道条三栏: 处理 | 测量 | 录制)
-- 自定义控件 (VU旋钮/VU表/LED按钮/段式显示)
-- 3 套内置 LookAndFeel 实现
-- JSON 主题加载器
-- 主题切换参数
-
-### Phase 6 — 集成测试与打磨
-- 全链路信号测试
-- DAW 自动化参数测试
-- 主题切换无闪烁
-- 性能 profiling (CPU 占用)
-
----
-
-## 关键假设
-
-- **Phase Offset** 默认实现一阶全通滤波器 (固定频点相位偏移)。全频段精确度数偏移需 Hilbert/FFT 方案，作为 v2 迭代。
-- **LUFS Integrated** 从播放开始累计到传输停止，需持有全程历史数据；进程内内存足够（~采样率×声道×4字节×时长）。
-- **外部主题 JSON** 加载失败时回退到默认 Channel Strip 主题并弹出警告。
-- **JUCE submodule** 使用 `juce` 官方 GitHub 仓库 `main` 分支，编译目标为 VST3。如需其他格式由 JUCE CMake 配置控制。
-- **录制路径** 初始为空，用户通过文件选择器设置；路径无效时录制自动禁用。
