@@ -27,3 +27,5 @@ theme_fix.patch
 # Installer staging
 installer/payload/
 installer/cache/
+installer/UTT.vst3/
+installer/UTT_Setup.exe
