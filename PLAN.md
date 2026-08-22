@@ -77,17 +77,16 @@ I/0 机械开关、旋钮完整协议（拖拽 320px、Shift 1600px、滚轮 0.0
 | 项 | 层级 | 说明 |
 |---|---|---|
 | DAW 实机手测 | DAW-tested | Live/REAPER 中开编辑器、跑自动化、长时稳定性；本机无 DAW 自动化路径 |
-| 安装器更新 | release-ready | installer/ 仍是 v0.2；需内嵌 WebView2 Evergreen Offline x64 + VC++ runtime，断网 VM 冷装验证 |
+| Windows 安装器冷装 | clean-VM-tested | v0.3 单文件安装器已内嵌 WebView2 Evergreen Offline x64 + VC++ x64，签名/内嵌 VST3 已验证；断网 VM 冷装仍未执行 |
 | Apple 全部项 | device-tested | 见 docs/APPLE_LANE.md §4 清单（auval、AUv3 注册、宿主矩阵、内存警告） |
-| 发布产物 | release-ready | 签名、notarization、哈希、Release Notes |
+| 发布产物 | release-ready | VST3、Standalone、Setup 与 SHA-256 已构建；产品代码签名、notarization、Release Notes 仍未完成 |
 
 ## 构建速查
 
 ```powershell
 # 需要 MSVC 环境（vcvars64）与 WebView2 NuGet 包（JUCE 自动发现）
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target UTT        # VST3 + Standalone
-cmake --build build --target UTTTests   # 单元测试
+cmake --build build --target UTT_All UTTTests
 ./build/UTTTests_artefacts/Release/UTTTests.exe
 # 安装副本验证
 ./tools/pluginval/pluginval.exe --validate "C:\Program Files\Common Files\VST3\UTT.vst3" --strictness 10

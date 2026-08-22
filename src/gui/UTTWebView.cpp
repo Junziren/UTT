@@ -1,440 +1,807 @@
-#include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "PluginProcessor.h"
 #include "UTTWebView.h"
 #include "BinaryData.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
+#include <string>
 
 namespace
 {
-constexpr int timerHz   = 25;   // meter transport
-constexpr int scopeDiv  = 2;    // scope every 2nd tick (~12 Hz)
-constexpr int scopePts  = 256;  // decimated points sent to JS
+constexpr int timerHz = 20;
+constexpr int scopeDivisor = 2;
+constexpr int scopePoints = 256;
+constexpr juce::uint32 readyTimeoutMs = 5000;
+constexpr char uiBuildPlaceholder[] = "__UTT_UI_BUILD_ID__";
+
+constexpr std::array<const char*, 18> parameterIDs {
+    "dcOffsetBypass", "phaseInvertL", "phaseInvertR", "phaseOffset",
+    "gain", "msMode", "monoMode", "stereoSeparation", "monoToStereo",
+    "channelSwap", "pan", "outputLGain", "outputRGain", "outputLMute",
+    "outputRMute", "outputLSolo", "outputRSolo", "recordEnable"
+};
+
+constexpr char nativeHardeningScript[] = R"JS(
+(() => {
+  const editable = (node) => !!(node && node.closest
+    && node.closest('input, textarea, select, [contenteditable="true"]'));
+
+  document.addEventListener('contextmenu', (event) => event.preventDefault(), true);
+  document.addEventListener('dragstart', (event) => event.preventDefault(), true);
+  document.addEventListener('dragover', (event) => event.preventDefault(), true);
+  document.addEventListener('drop', (event) => event.preventDefault(), true);
+  document.addEventListener('selectstart', (event) => {
+    if (!editable(event.target)) event.preventDefault();
+  }, true);
+
+  window.addEventListener('keydown', (event) => {
+    const key = String(event.key || '').toLowerCase();
+    if (key === 'f5' || ((event.ctrlKey || event.metaKey)
+        && ['+', '-', '=', '0', 'r', 'u', 's'].includes(key))) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+
+  window.addEventListener('wheel', (event) => {
+    if (event.ctrlKey) event.preventDefault();
+  }, { passive: false, capture: true });
+})();
+)JS";
+
+bool isAllowedParameterID (const juce::String& parameterID)
+{
+    return std::any_of (parameterIDs.begin(), parameterIDs.end(), [&] (const char* candidate)
+    {
+        return parameterID == candidate;
+    });
+}
+
+bool parseFiniteNumber (const juce::var& value, double& result)
+{
+    if (! (value.isInt() || value.isInt64() || value.isDouble()))
+        return false;
+
+    result = static_cast<double> (value);
+    return std::isfinite (result);
+}
+
+juce::String unitForParameter (const juce::String& parameterID)
+{
+    if (parameterID == "phaseOffset")
+        return juce::String::fromUTF8 ("\xc2\xb0");
+    if (parameterID == "stereoSeparation")
+        return "%";
+    if (parameterID == "gain" || parameterID == "outputLGain" || parameterID == "outputRGain")
+        return "dB";
+    return {};
+}
 } // namespace
 
-UTTWebView::UTTWebView (UTTProcessor& p, juce::AudioProcessorEditor& ownerEditor)
-    : juce::WebBrowserComponent (
-        juce::WebBrowserComponent::Options()
-            .withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
-            .withNativeFunction ("uttUiReady",
-                [this] (const juce::Array<juce::var>& params,
-                        const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
-                {
-                    juce::ignoreUnused (params);
-                    completion (buildSnapshot());
-                })
-            .withNativeFunction ("uttGesture",
-                [this] (const juce::Array<juce::var>& params,
-                        const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
-                {
-                    if (params.size() >= 1)
-                        handleGesture (params.getReference (0), completion);
-                    else
-                        completion (juce::var());
-                })
-            .withNativeFunction ("uttResetParam",
-                [this] (const juce::Array<juce::var>& params,
-                        const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
-                {
-                    if (params.size() >= 1)
-                        handleResetParam (params.getReference (0));
-                    completion (juce::var (true));
-                })
-            .withNativeFunction ("uttRecordBrowse",
-                [this] (const juce::Array<juce::var>& params,
-                        const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
-                {
-                    juce::ignoreUnused (params);
-                    handleRecordBrowse();
-                    completion (juce::var (true));
-                })
-            .withNativeFunction ("uttAbout",
-                [this] (const juce::Array<juce::var>& params,
-                        const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
-                {
-                    juce::ignoreUnused (params);
-                    handleAbout();
-                    completion (juce::var (true));
-                })
-            .withNativeFunction ("uttParamMenu",
-                [this] (const juce::Array<juce::var>& params,
-                        const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
-                {
-                    if (params.size() >= 1)
-                        handleParamMenu (params.getReference (0));
-                    completion (juce::var (true));
-                })
-            .withEventListener ("uttParamState", [] (const juce::var&) {})
-            .withEventListener ("uttMeter",      [] (const juce::var&) {})
-            .withEventListener ("uttScope",      [] (const juce::var&) {})
-            .withEventListener ("uttRecord",     [] (const juce::var&) {})
-            .withResourceProvider (
-                [] (const juce::String& url)
-                {
-                    // The provider receives "/" for the root document and
-                    // "/name.ext" for linked resources. BinaryData symbol
-                    // names replace non-alphanumerics with underscores.
-                    auto path = url.upToFirstOccurrenceOf ("?", false, false);
-                    if (path == "/" || path.isEmpty())
-                        path = "/index.html";
+class UTTWebView::Browser final : public juce::WebBrowserComponent
+{
+public:
+    Browser (UTTWebView& ownerIn, juce::WebBrowserComponent::Options options)
+        : juce::WebBrowserComponent (std::move (options)), owner (ownerIn)
+    {
+    }
 
-                    struct Entry { const char* urlName; const char* binName; const char* mime; };
-                    static const Entry entries[] = {
-                        { "/index.html", "index_html", "text/html" },
-                        { "/utt.css",    "utt_css",    "text/css" },
-                        { "/utt.js",     "utt_js",     "text/javascript" },
-                    };
+    bool pageAboutToLoad (const juce::String& url) override
+    {
+        return url == "about:blank"
+            || url.startsWithIgnoreCase (juce::WebBrowserComponent::getResourceProviderRoot());
+    }
 
-                    for (auto& e : entries)
-                    {
-                        if (path != e.urlName)
-                            continue;
+    void pageFinishedLoading (const juce::String& url) override
+    {
+        owner.pageFinishedLoading (url);
+    }
 
-                        int size = 0;
-                        if (auto* data = BinaryData::getNamedResource (
-                                (juce::String ("BinaryData_") + e.binName).toRawUTF8(), size))
-                        {
-                            juce::WebBrowserComponent::Resource resource;
-                            resource.data.assign (reinterpret_cast<const std::byte*> (data),
-                                                  reinterpret_cast<const std::byte*> (data) + size);
-                            resource.mimeType = juce::String (e.mime);
-                            return std::make_optional (std::move (resource));
-                        }
-                    }
-                    return std::optional<juce::WebBrowserComponent::Resource>();
-                })),
-      processor (p),
+    bool pageLoadHadNetworkError (const juce::String& errorInfo) override
+    {
+        owner.pageLoadFailed (errorInfo);
+        return true;
+    }
+
+private:
+    UTTWebView& owner;
+};
+
+UTTWebView::UTTWebView (UTTProcessor& p,
+                        juce::AudioProcessorEditor& ownerEditor,
+                        FailureHandler onFailure,
+                        ReadyHandler onReady)
+    : processor (p),
       apvts (p.apvts),
-      editor (ownerEditor)
+      editor (ownerEditor),
+      failureHandler (std::move (onFailure)),
+      readyHandler (std::move (onReady))
 {
     scopeL.assign ((size_t) UTT::Oscilloscope::maxPoints, 0.0f);
     scopeR.assign ((size_t) UTT::Oscilloscope::maxPoints, 0.0f);
+
+    if (! juce::WebBrowserComponent::areOptionsSupported (makeBrowserOptions (*this)))
+    {
+        reportFailure (SurfaceState::unavailable, "WebView2 runtime is unavailable.");
+        return;
+    }
+
+    browser = std::make_unique<Browser> (*this, makeBrowserOptions (*this));
+    addAndMakeVisible (*browser);
 }
 
 UTTWebView::~UTTWebView()
 {
     stopTimer();
-    for (auto& id : listenedParams)
+    endActiveParameterGestures();
+
+    for (const auto& id : listenedParameters)
         apvts.removeParameterListener (id, this);
+
+    browser.reset();
+}
+
+juce::WebBrowserComponent::Options UTTWebView::makeBrowserOptions (UTTWebView& owner)
+{
+    auto options = juce::WebBrowserComponent::Options {};
+
+#if JUCE_WINDOWS
+    const auto userDataFolder = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("UnpureBloom")
+        .getChildFile ("UTT-WebView2");
+
+    options = options
+        .withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
+        .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2 {}
+            .withUserDataFolder (userDataFolder)
+            .withStatusBarDisabled()
+            .withBuiltInErrorPageDisabled()
+            .withBackgroundColour (juce::Colour (0xfffafaf8)));
+#endif
+
+    return options
+        .withWebViewLifetimeListener (&owner)
+        .withNativeIntegrationEnabled()
+        .withUserScript (nativeHardeningScript)
+        .withResourceProvider ([] (const juce::String& url)
+        {
+            return getResource (url);
+        })
+        .withEventListener ("uiReady", [&owner] (const juce::var&)
+        {
+            owner.handleUiReady();
+        })
+        .withEventListener ("parameterGesture", [&owner] (const juce::var& payload)
+        {
+            owner.handleParameterGesture (payload);
+        })
+        .withEventListener ("parameterReset", [&owner] (const juce::var& payload)
+        {
+            owner.handleParameterReset (payload);
+        })
+        .withEventListener ("parameterContext", [&owner] (const juce::var& payload)
+        {
+            owner.handleParameterContext (payload);
+        })
+        .withEventListener ("recordBrowse", [&owner] (const juce::var&)
+        {
+            owner.handleRecordBrowse();
+        });
+}
+
+juce::String UTTWebView::getMimeType (const juce::String& path)
+{
+    if (path.endsWithIgnoreCase (".html")) return "text/html";
+    if (path.endsWithIgnoreCase (".css"))  return "text/css";
+    if (path.endsWithIgnoreCase (".js"))   return "text/javascript";
+    return "application/octet-stream";
+}
+
+UTTWebView::ResourceResult UTTWebView::getResource (const juce::String& url)
+{
+    auto requestedPath = url.upToFirstOccurrenceOf ("?", false, false);
+    requestedPath = requestedPath.trimCharactersAtStart ("/");
+    if (requestedPath.isEmpty())
+        requestedPath = "index.html";
+
+    static const juce::StringArray allowedResources { "index.html", "styles.css", "app.js" };
+    if (! allowedResources.contains (requestedPath)
+        || requestedPath.contains ("..")
+        || requestedPath.containsChar ('\\')
+        || requestedPath.containsChar ('/'))
+        return std::nullopt;
+
+    for (int index = 0; index < BinaryData::namedResourceListSize; ++index)
+    {
+        const auto* resourceName = BinaryData::namedResourceList[index];
+        const auto originalFilename = juce::File (BinaryData::getNamedResourceOriginalFilename (resourceName)).getFileName();
+        if (! originalFilename.equalsIgnoreCase (requestedPath))
+            continue;
+
+        int dataSize = 0;
+        const auto* data = BinaryData::getNamedResource (resourceName, dataSize);
+        if (data == nullptr || dataSize <= 0)
+            return std::nullopt;
+
+        Resource resource;
+
+        if (requestedPath == "index.html")
+        {
+            std::string document (static_cast<const char*> (data), (size_t) dataSize);
+            const std::string buildID (UTT_UI_BUILD_ID);
+            size_t position = 0;
+
+            while ((position = document.find (uiBuildPlaceholder, position)) != std::string::npos)
+            {
+                document.replace (position, std::strlen (uiBuildPlaceholder), buildID);
+                position += buildID.length();
+            }
+
+            resource.data.resize (document.size());
+            std::memcpy (resource.data.data(), document.data(), document.size());
+        }
+        else
+        {
+            resource.data.resize ((size_t) dataSize);
+            std::memcpy (resource.data.data(), data, (size_t) dataSize);
+        }
+
+        resource.mimeType = getMimeType (requestedPath);
+        return resource;
+    }
+
+    return std::nullopt;
+}
+
+void UTTWebView::webViewConstructed (juce::WebBrowserComponent* webView)
+{
+    constructedBrowser = webView;
+}
+
+void UTTWebView::webViewDestructed (juce::WebBrowserComponent* webView)
+{
+    if (constructedBrowser == webView)
+        constructedBrowser = nullptr;
+
+    endActiveParameterGestures();
 }
 
 void UTTWebView::loadInterface()
 {
-    // listen to every parameter (message-thread callbacks)
-    for (auto* param : processor.getParameters())
-        if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*> (param))
+    if (interfaceRequested || browser == nullptr || failureReported)
+        return;
+
+    for (auto* parameter : processor.getParameters())
+        if (auto* withID = dynamic_cast<juce::AudioProcessorParameterWithID*> (parameter))
         {
-            apvts.addParameterListener (withId->paramID, this);
-            listenedParams.add (withId->paramID);
+            apvts.addParameterListener (withID->paramID, this);
+            listenedParameters.addIfNotAlreadyThere (withID->paramID);
         }
 
-    goToURL (getResourceProviderRoot() + "/index.html");
+    interfaceRequested = true;
+    surfaceState = SurfaceState::loading;
+    readyDeadlineMs = juce::Time::getMillisecondCounter() + readyTimeoutMs;
+    browser->goToURL (juce::WebBrowserComponent::getResourceProviderRoot()
+                      + "index.html?build=" + juce::String (UTT_UI_BUILD_ID));
+
+    // Keep the watchdog alive even while the native loading panel is frontmost.
     startTimerHz (timerHz);
 }
 
-void UTTWebView::setBridgeActive (bool active)
+void UTTWebView::resized()
 {
-    bridgeActive = active;
-    if (! active)
-        stopTimer();
-    else
-        startTimerHz (timerHz);
+    if (browser != nullptr)
+        browser->setBounds (getLocalBounds());
 }
 
-//==============================================================================
+void UTTWebView::visibilityChanged()
+{
+    setSurfaceActive (isShowing());
+}
+
+void UTTWebView::timerCallback()
+{
+    if (! frontendReady)
+    {
+        if (interfaceRequested && ! failureReported
+            && juce::Time::getMillisecondCounter() >= readyDeadlineMs)
+            reportFailure (SurfaceState::loadError,
+                           "Web UI did not signal ready within 5 seconds.");
+        return;
+    }
+
+    if (! surfaceActive)
+        return;
+
+    ++tick;
+    pushMeterFrame();
+    if (tick % scopeDivisor == 0)
+        pushScopeFrame();
+    flushDirtyParameters();
+
+    auto& recorder = processor.getRecorder();
+    if (recorder.consumeError())
+        recordErrorPending = true;
+
+    const auto on = recorder.isDesired();
+    const auto active = recorder.isActive();
+    const auto dropped = recorder.getDroppedBlocks();
+    const auto path = processor.getRecordPath();
+
+    if (recordErrorPending || on != lastRecordOn || active != lastRecordActive
+        || dropped != lastDroppedSeen || path != lastRecordPath)
+        pushRecordState();
+}
+
 void UTTWebView::parameterChanged (const juce::String& parameterID, float)
 {
-    if (! dirtyParams.contains (parameterID))
-        dirtyParams.add (parameterID);
+    if (! dirtyParameters.contains (parameterID))
+        dirtyParameters.add (parameterID);
 }
 
-void UTTWebView::handleGesture (const juce::var& payload,
-                                const juce::WebBrowserComponent::NativeFunctionCompletion& completion)
+void UTTWebView::handleUiReady()
 {
-    auto* obj = payload.getDynamicObject();
-    if (obj == nullptr) { completion (juce::var (false)); return; }
+    if (failureReported)
+        return;
 
-    const auto id = obj->getProperty ("id").toString();
-    const auto phase = obj->getProperty ("phase").toString();
+    frontendReady = true;
+    surfaceState = SurfaceState::ready;
 
-    auto* param = apvts.getParameter (id);
-    if (param == nullptr) { completion (juce::var (false)); return; }
+    if (readyHandler)
+        readyHandler();
+
+    dirtyParameters.clearQuick();
+    sendFullState();
+
+    auto* visibility = new juce::DynamicObject();
+    visibility->setProperty ("active", surfaceActive);
+    emitEvent ("surfaceVisibility", juce::var (visibility));
+}
+
+void UTTWebView::handleParameterGesture (const juce::var& payload)
+{
+    auto* object = payload.getDynamicObject();
+    if (object == nullptr)
+        return;
+
+    const auto parameterID = object->getProperty ("id").toString();
+    const auto phase = object->getProperty ("phase").toString();
+    if (parameterID.length() > 64 || ! isAllowedParameterID (parameterID)
+        || (phase != "begin" && phase != "value" && phase != "end"))
+        return;
+
+    auto* parameter = apvts.getParameter (parameterID);
+    if (parameter == nullptr)
+        return;
 
     if (phase == "begin")
     {
-        param->beginChangeGesture();
+        if (! activeParameterGestures.contains (parameter))
+        {
+            parameter->beginChangeGesture();
+            activeParameterGestures.add (parameter);
+        }
+        lastTouchedParameterID = parameterID;
+        return;
     }
-    else if (phase == "set")
+
+    if (phase == "end")
     {
-        auto v = (float) (double) obj->getProperty ("value");
-        if (std::isfinite (v))
-            param->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, v));
+        const auto index = activeParameterGestures.indexOf (parameter);
+        if (index >= 0)
+        {
+            parameter->endChangeGesture();
+            activeParameterGestures.remove (index);
+        }
+        return;
     }
-    else if (phase == "end")
+
+    double normalized = 0.0;
+    if (! parseFiniteNumber (object->getProperty ("normalized"), normalized))
+        return;
+
+    if (! activeParameterGestures.contains (parameter))
     {
-        param->endChangeGesture();
+        parameter->beginChangeGesture();
+        activeParameterGestures.add (parameter);
     }
-    completion (juce::var (true));
+
+    lastTouchedParameterID = parameterID;
+    parameter->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, (float) normalized));
 }
 
-void UTTWebView::handleResetParam (const juce::var& payload)
+void UTTWebView::handleParameterReset (const juce::var& payload)
 {
-    if (auto* obj = payload.getDynamicObject())
-        if (auto* param = apvts.getParameter (obj->getProperty ("id").toString()))
-        {
-            param->beginChangeGesture();
-            param->setValueNotifyingHost (param->getDefaultValue());
-            param->endChangeGesture();
-        }
+    auto* object = payload.getDynamicObject();
+    if (object == nullptr)
+        return;
+
+    const auto parameterID = object->getProperty ("id").toString();
+    if (parameterID.length() > 64 || ! isAllowedParameterID (parameterID))
+        return;
+
+    if (auto* parameter = apvts.getParameter (parameterID))
+    {
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost (parameter->getDefaultValue());
+        parameter->endChangeGesture();
+        lastTouchedParameterID = parameterID;
+    }
+}
+
+void UTTWebView::handleParameterContext (const juce::var& payload)
+{
+    auto* object = payload.getDynamicObject();
+    if (object == nullptr)
+        return;
+
+    const auto parameterID = object->getProperty ("id").toString();
+    if (parameterID.length() > 64 || ! isAllowedParameterID (parameterID))
+        return;
+
+    auto* parameter = apvts.getParameter (parameterID);
+    auto* hostContext = editor.getHostContext();
+    if (parameter == nullptr || hostContext == nullptr)
+        return;
+
+    if (auto menu = hostContext->getContextMenuForParameter (parameter))
+        menu->showNativeMenu (editor.localPointToGlobal (editor.getMouseXYRelative()));
 }
 
 void UTTWebView::handleRecordBrowse()
 {
-    auto defaultFile = UTT::AudioRecorder::getDefaultPath();
+    const auto defaultFile = UTT::AudioRecorder::getDefaultPath();
     auto chooser = std::make_shared<juce::FileChooser> (
-        "选择录制文件", defaultFile.getParentDirectory(), "*.wav", true);
+        "Choose recording file", defaultFile.getParentDirectory(), "*.wav", true);
+    auto safeThis = juce::Component::SafePointer<UTTWebView> (this);
 
-    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
-        [this, chooser] (const juce::FileChooser& fc)
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                             | juce::FileBrowserComponent::canSelectFiles,
+        [safeThis, chooser] (const juce::FileChooser& fileChooser)
         {
-            if (fc.getResult() == juce::File())
+            if (safeThis == nullptr || fileChooser.getResult() == juce::File())
                 return;
-            processor.setRecordPath (fc.getResult().getFullPathName());
-            pushRecordState();
+
+            safeThis->processor.setRecordPath (fileChooser.getResult().getFullPathName());
+            safeThis->pushRecordState();
         });
 }
 
-void UTTWebView::handleAbout()
+juce::var UTTWebView::describeParameter (const juce::AudioProcessorParameter& parameter) const
 {
-    juce::MessageBoxOptions options;
-    options = options.withTitle ("关于 UTT")
-                 .withMessage ("UTT — Utility Toolbox v0.3.0\n"
-                               "开发者：UnpureBloom\n"
-                               "通道条工具 VST3 / AUv3（预备）\n\n"
-                               "JUCE 8 · WebView2 界面 · GPLv3\n"
-                               "Bilibili: space.bilibili.com/227573145")
-                 .withIconType (juce::MessageBoxIconType::InfoIcon)
-                 .withButton ("关闭");
-    juce::NativeMessageBox::showAsync (options, nullptr);
-}
+    auto* withID = dynamic_cast<const juce::AudioProcessorParameterWithID*> (&parameter);
+    if (withID == nullptr)
+        return {};
 
-void UTTWebView::handleParamMenu (const juce::var& payload)
-{
-    if (auto* obj = payload.getDynamicObject())
+    auto* object = new juce::DynamicObject();
+    const auto id = withID->paramID;
+
+    object->setProperty ("id", id);
+    object->setProperty ("normalized", parameter.getValue());
+    object->setProperty ("defaultNormalized", parameter.getDefaultValue());
+    object->setProperty ("text", formatParameterValue (parameter));
+    object->setProperty ("unit", unitForParameter (id));
+
+    if (auto* boolParameter = dynamic_cast<const juce::AudioParameterBool*> (&parameter))
     {
-        auto* param = apvts.getParameter (obj->getProperty ("id").toString());
-        if (param == nullptr)
-            return;
-
-        auto* hostContext = editor.getHostContext();
-        if (hostContext == nullptr)
-            return;
-
-        if (auto menu = hostContext->getContextMenuForParameter (param))
-            menu->showNativeMenu (editor.localPointToGlobal (editor.getMouseXYRelative()));
+        object->setProperty ("kind", "toggle");
+        object->setProperty ("plain", boolParameter->get() ? 1 : 0);
     }
-}
-
-//==============================================================================
-juce::String UTTWebView::formatParameterValue (const juce::AudioProcessorParameter& param)
-{
-    if (auto* withId = dynamic_cast<const juce::AudioProcessorParameterWithID*> (&param))
+    else if (auto* choiceParameter = dynamic_cast<const juce::AudioParameterChoice*> (&parameter))
     {
-        const auto& id = withId->paramID;
+        object->setProperty ("kind", "choice");
+        object->setProperty ("plain", choiceParameter->getIndex());
 
-        if (auto* choice = dynamic_cast<const juce::AudioParameterChoice*> (&param))
-            return choice->getCurrentChoiceName();
-
-        if (auto* floatParam = dynamic_cast<const juce::AudioParameterFloat*> (&param))
-        {
-            const double v = floatParam->get();
-            if (id == "phaseOffset")
-                return juce::String (juce::roundToInt (v)) + juce::String::fromUTF8 ("\xc2\xb0");
-            if (id == "stereoSeparation")
-                return juce::String (juce::roundToInt (v)) + "%";
-            if (id == "pan")
-            {
-                auto pc = juce::roundToInt (v);
-                if (pc == 0) return "C";
-                return pc < 0 ? ("L" + juce::String (-pc)) : ("R" + juce::String (pc));
-            }
-            // gain-style dB params
-            return (v >= 0 ? "+" : "") + juce::String (v, 1) + " dB";
-        }
+        juce::Array<juce::var> choices;
+        for (const auto& choice : choiceParameter->choices)
+            choices.add (choice);
+        object->setProperty ("choices", choices);
     }
-    return juce::String ();
-}
-
-juce::var UTTWebView::buildSnapshot()
-{
-    auto* root = new juce::DynamicObject();
-    juce::Array<juce::var> params;
-
-    for (auto* param : processor.getParameters())
+    else if (auto* floatParameter = dynamic_cast<const juce::AudioParameterFloat*> (&parameter))
     {
-        auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*> (param);
-        if (withId == nullptr)
-            continue;
-
-        auto* po = new juce::DynamicObject();
-        po->setProperty ("id", withId->paramID);
-        po->setProperty ("v", param->getValue());
-        po->setProperty ("t", formatParameterValue (*param));
-        po->setProperty ("d", param->getDefaultValue());
-        params.add (juce::var (po));
-    }
-    root->setProperty ("params", params);
-
-    auto* rec = new juce::DynamicObject();
-    rec->setProperty ("on", processor.getRecorder().isDesired());
-    rec->setProperty ("active", processor.getRecorder().isActive());
-    rec->setProperty ("path", processor.getRecordPath());
-    rec->setProperty ("dropped", (juce::int64) processor.getRecorder().getDroppedBlocks());
-    root->setProperty ("record", juce::var (rec));
-
-    auto sr = processor.getSampleRate();
-    if (sr > 0)
-    {
-        juce::String engine = juce::String (juce::roundToInt (sr));
-        engine += " Hz \xc2\xb7 ";
-        engine += juce::String (processor.getBlockSize());
-        root->setProperty ("engine", engine);
+        object->setProperty ("kind", "continuous");
+        object->setProperty ("plain", floatParameter->get());
     }
     else
     {
-        root->setProperty ("engine", juce::String ());
+        object->setProperty ("kind", "continuous");
+        object->setProperty ("plain", parameter.getValue());
     }
 
-    lastRecordOn = processor.getRecorder().isDesired();
-    lastRecordActive = processor.getRecorder().isActive();
-    lastRecordPath = processor.getRecordPath();
+    return juce::var (object);
+}
+
+juce::var UTTWebView::buildHeroState() const
+{
+    auto* object = new juce::DynamicObject();
+    auto* parameter = apvts.getParameter (lastTouchedParameterID);
+    if (parameter == nullptr)
+        parameter = apvts.getParameter ("gain");
+
+    if (parameter != nullptr)
+    {
+        auto description = describeParameter (*parameter);
+        auto* detail = description.getDynamicObject();
+        const auto id = detail->getProperty ("id").toString();
+        object->setProperty ("id", id);
+        object->setProperty ("label", formatParameterLabel (id));
+        object->setProperty ("text", detail->getProperty ("text"));
+        object->setProperty ("unit", detail->getProperty ("unit"));
+    }
+
+    return juce::var (object);
+}
+
+juce::var UTTWebView::buildFullState() const
+{
+    auto* root = new juce::DynamicObject();
+    juce::Array<juce::var> parameters;
+
+    for (auto* parameter : processor.getParameters())
+        if (dynamic_cast<juce::AudioProcessorParameterWithID*> (parameter) != nullptr)
+            parameters.add (describeParameter (*parameter));
+
+    root->setProperty ("params", parameters);
+    root->setProperty ("hero", buildHeroState());
+    root->setProperty ("version", "v0.3.0");
+
+    auto* engine = new juce::DynamicObject();
+    engine->setProperty ("sampleRate", processor.getSampleRate());
+    engine->setProperty ("blockSize", processor.getBlockSize());
+    root->setProperty ("engine", juce::var (engine));
+
+    auto* record = new juce::DynamicObject();
+    record->setProperty ("desired", processor.getRecorder().isDesired());
+    record->setProperty ("active", processor.getRecorder().isActive());
+    record->setProperty ("path", processor.getRecordPath());
+    record->setProperty ("dropped", (juce::int64) processor.getRecorder().getDroppedBlocks());
+    record->setProperty ("error", false);
+    root->setProperty ("record", juce::var (record));
 
     return juce::var (root);
 }
 
-//==============================================================================
-void UTTWebView::timerCallback()
+juce::String UTTWebView::formatParameterValue (const juce::AudioProcessorParameter& parameter)
 {
-    ++tick;
+    auto* withID = dynamic_cast<const juce::AudioProcessorParameterWithID*> (&parameter);
+    if (withID == nullptr)
+        return parameter.getCurrentValueAsText();
 
-    if (! bridgeActive)
-        return;
+    if (auto* boolParameter = dynamic_cast<const juce::AudioParameterBool*> (&parameter))
+        return boolParameter->get() ? "ON" : "OFF";
 
-    pushMeterFrame();
-    if (tick % scopeDiv == 0)
-        pushScopeFrame();
-    flushDirtyParams();
+    if (auto* choiceParameter = dynamic_cast<const juce::AudioParameterChoice*> (&parameter))
+        return choiceParameter->getCurrentChoiceName();
 
-    // record state: push when something changed (or a write error appeared)
-    auto& rec = processor.getRecorder();
-    const bool on = rec.isDesired();
-    const bool active = rec.isActive();
-    auto dropped = rec.getDroppedBlocks();
-    auto path = processor.getRecordPath();
-
-    if (rec.consumeError())
+    if (auto* floatParameter = dynamic_cast<const juce::AudioParameterFloat*> (&parameter))
     {
-        auto* obj = new juce::DynamicObject();
-        obj->setProperty ("error", true);
-        obj->setProperty ("on", on);
-        obj->setProperty ("active", false);
-        obj->setProperty ("path", path);
-        obj->setProperty ("dropped", (juce::int64) dropped);
-        emitEventIfBrowserIsVisible ("uttRecord", juce::var (obj));
+        const auto value = (double) floatParameter->get();
+        const auto& id = withID->paramID;
+        if (id == "phaseOffset")
+            return juce::String (juce::roundToInt (value)) + juce::String::fromUTF8 ("\xc2\xb0");
+        if (id == "stereoSeparation")
+            return juce::String (juce::roundToInt (value)) + "%";
+        if (id == "pan")
+        {
+            const auto rounded = juce::roundToInt (value);
+            if (rounded == 0) return "C";
+            return rounded < 0 ? "L" + juce::String (-rounded) : "R" + juce::String (rounded);
+        }
+        if (id == "gain" || id == "outputLGain" || id == "outputRGain")
+            return (value >= 0.0 ? "+" : "") + juce::String (value, 1) + " dB";
+        return juce::String (value, 2);
     }
-    else if (on != lastRecordOn || active != lastRecordActive || path != lastRecordPath)
-    {
-        lastRecordOn = on;
-        lastRecordActive = active;
-        lastRecordPath = path;
-        pushRecordState();
-    }
-    else if (dropped != lastDroppedSeen)
-    {
-        lastDroppedSeen = dropped;
-        pushRecordState();
-    }
+
+    return parameter.getCurrentValueAsText();
 }
 
-void UTTWebView::flushDirtyParams()
+juce::String UTTWebView::formatParameterLabel (const juce::String& parameterID)
 {
-    if (dirtyParams.isEmpty())
+    struct Entry { const char* id; const char* label; };
+    static constexpr Entry entries[] {
+        { "dcOffsetBypass", "DC BLOCK" },
+        { "phaseInvertL", "PHASE L" },
+        { "phaseInvertR", "PHASE R" },
+        { "phaseOffset", "PHASE" },
+        { "gain", "GAIN" },
+        { "msMode", "M/S" },
+        { "monoMode", "MONO" },
+        { "stereoSeparation", "WIDTH" },
+        { "monoToStereo", "M TO S" },
+        { "channelSwap", "SWAP" },
+        { "pan", "PAN" },
+        { "outputLGain", "L GAIN" },
+        { "outputRGain", "R GAIN" },
+        { "outputLMute", "L MUTE" },
+        { "outputRMute", "R MUTE" },
+        { "outputLSolo", "L SOLO" },
+        { "outputRSolo", "R SOLO" },
+        { "recordEnable", "RECORD" }
+    };
+
+    for (const auto& entry : entries)
+        if (parameterID == entry.id)
+            return entry.label;
+
+    return parameterID.toUpperCase();
+}
+
+void UTTWebView::sendFullState()
+{
+    emitEvent ("fullState", buildFullState());
+
+    auto& recorder = processor.getRecorder();
+    lastRecordOn = recorder.isDesired();
+    lastRecordActive = recorder.isActive();
+    lastRecordPath = processor.getRecordPath();
+    lastDroppedSeen = recorder.getDroppedBlocks();
+}
+
+void UTTWebView::flushDirtyParameters()
+{
+    if (dirtyParameters.isEmpty())
         return;
 
     auto* root = new juce::DynamicObject();
-    auto* params = new juce::DynamicObject();
+    juce::Array<juce::var> parameters;
+    for (const auto& id : dirtyParameters)
+        if (auto* parameter = apvts.getParameter (id))
+            parameters.add (describeParameter (*parameter));
 
-    for (auto& id : dirtyParams)
-    {
-        if (auto* param = apvts.getParameter (id))
-        {
-            auto* po = new juce::DynamicObject();
-            po->setProperty ("v", param->getValue());
-            po->setProperty ("t", formatParameterValue (*param));
-            params->setProperty (id, juce::var (po));
-        }
-    }
-    dirtyParams.clearQuick();
-    root->setProperty ("params", juce::var (params));
-    emitEventIfBrowserIsVisible ("uttParamState", juce::var (root));
+    dirtyParameters.clearQuick();
+    root->setProperty ("params", parameters);
+    root->setProperty ("hero", buildHeroState());
+    emitEvent ("parameterState", juce::var (root));
 }
 
 void UTTWebView::pushMeterFrame()
 {
-    const auto& m = processor.getMetering();
-    const auto& pm = processor.getPhaseMeter();
+    const auto& metering = processor.getMetering();
+    const auto& phase = processor.getPhaseMeter();
     const auto& lufs = processor.getLUFSMeter();
 
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty ("lp", m.getLPeak());
-    obj->setProperty ("rp", m.getRPeak());
-    obj->setProperty ("lr", m.getLRMS());
-    obj->setProperty ("rr", m.getRRMS());
-    obj->setProperty ("corr", pm.getCorrelation());
-    obj->setProperty ("lm", lufs.getMomentary());
-    obj->setProperty ("ls", lufs.getShortTerm());
-    obj->setProperty ("li", lufs.getIntegrated());
-    emitEventIfBrowserIsVisible ("uttMeter", juce::var (obj));
+    auto* object = new juce::DynamicObject();
+    object->setProperty ("peakL", metering.getLPeak());
+    object->setProperty ("peakR", metering.getRPeak());
+    object->setProperty ("rmsL", metering.getLRMS());
+    object->setProperty ("rmsR", metering.getRRMS());
+    object->setProperty ("correlation", phase.getCorrelation());
+    object->setProperty ("momentary", lufs.getMomentary());
+    object->setProperty ("shortTerm", lufs.getShortTerm());
+    object->setProperty ("integrated", lufs.getIntegrated());
+    emitEvent ("meterFrame", juce::var (object));
 }
 
 void UTTWebView::pushScopeFrame()
 {
-    const auto& scope = processor.getOscilloscope();
-    auto generation = scope.copyLatestFrame (scopeL, scopeR);
+    const auto generation = processor.getOscilloscope().copyLatestFrame (scopeL, scopeR);
     if (generation == 0 || generation == lastScopeGeneration)
         return;
-    lastScopeGeneration = generation;
 
-    const int n = juce::jmin ((int) scopeL.size(), (int) scopeR.size());
-    if (n < 2)
+    lastScopeGeneration = generation;
+    const auto pointCount = juce::jmin ((int) scopeL.size(), (int) scopeR.size());
+    if (pointCount < 2)
         return;
 
-    juce::Array<juce::var> lArr, rArr;
-    lArr.ensureStorageAllocated (scopePts);
-    rArr.ensureStorageAllocated (scopePts);
-    const double stride = (double) (n - 1) / (scopePts - 1);
-    for (int i = 0; i < scopePts; ++i)
+    juce::Array<juce::var> left;
+    juce::Array<juce::var> right;
+    left.ensureStorageAllocated (scopePoints);
+    right.ensureStorageAllocated (scopePoints);
+
+    const auto stride = (double) (pointCount - 1) / (scopePoints - 1);
+    for (int index = 0; index < scopePoints; ++index)
     {
-        auto idx = juce::roundToInt (i * stride);
-        lArr.add (scopeL[(size_t) idx]);
-        rArr.add (scopeR[(size_t) idx]);
+        const auto sourceIndex = juce::roundToInt (index * stride);
+        left.add (scopeL[(size_t) sourceIndex]);
+        right.add (scopeR[(size_t) sourceIndex]);
     }
 
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty ("g", (juce::int64) generation);
-    obj->setProperty ("l", lArr);
-    obj->setProperty ("r", rArr);
-    emitEventIfBrowserIsVisible ("uttScope", juce::var (obj));
+    auto* object = new juce::DynamicObject();
+    object->setProperty ("generation", (juce::int64) generation);
+    object->setProperty ("left", left);
+    object->setProperty ("right", right);
+    emitEvent ("scopeFrame", juce::var (object));
 }
 
 void UTTWebView::pushRecordState()
 {
-    auto& rec = processor.getRecorder();
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty ("on", rec.isDesired());
-    obj->setProperty ("active", rec.isActive());
-    obj->setProperty ("path", processor.getRecordPath());
-    obj->setProperty ("dropped", (juce::int64) rec.getDroppedBlocks());
-    obj->setProperty ("error", false);
-    emitEventIfBrowserIsVisible ("uttRecord", juce::var (obj));
+    auto& recorder = processor.getRecorder();
+    const auto on = recorder.isDesired();
+    const auto active = recorder.isActive();
+    const auto dropped = recorder.getDroppedBlocks();
+    const auto path = processor.getRecordPath();
+
+    auto* object = new juce::DynamicObject();
+    object->setProperty ("desired", on);
+    object->setProperty ("active", active);
+    object->setProperty ("path", path);
+    object->setProperty ("dropped", (juce::int64) dropped);
+    object->setProperty ("error", recordErrorPending);
+    recordErrorPending = false;
+
+    lastRecordOn = on;
+    lastRecordActive = active;
+    lastDroppedSeen = dropped;
+    lastRecordPath = path;
+    emitEvent ("recordState", juce::var (object));
+}
+
+void UTTWebView::emitEvent (const juce::Identifier& eventID, juce::var payload)
+{
+    if (frontendReady && browser != nullptr)
+        browser->emitEventIfBrowserIsVisible (eventID, std::move (payload));
+}
+
+void UTTWebView::endActiveParameterGestures()
+{
+    for (auto* parameter : activeParameterGestures)
+        if (parameter != nullptr)
+            parameter->endChangeGesture();
+    activeParameterGestures.clearQuick();
+}
+
+void UTTWebView::setSurfaceActive (bool active)
+{
+    if (surfaceActive == active)
+        return;
+
+    surfaceActive = active;
+    if (! active)
+    {
+        endActiveParameterGestures();
+        if (frontendReady)
+        {
+            auto* visibility = new juce::DynamicObject();
+            visibility->setProperty ("active", false);
+            emitEvent ("surfaceVisibility", juce::var (visibility));
+        }
+        stopTimer();
+        return;
+    }
+
+    if (interfaceRequested)
+        startTimerHz (timerHz);
+
+    if (frontendReady)
+    {
+        sendFullState();
+        auto* visibility = new juce::DynamicObject();
+        visibility->setProperty ("active", true);
+        emitEvent ("surfaceVisibility", juce::var (visibility));
+    }
+}
+
+void UTTWebView::pageFinishedLoading (const juce::String& url)
+{
+    juce::ignoreUnused (url);
+}
+
+void UTTWebView::pageLoadFailed (const juce::String& error)
+{
+    reportFailure (SurfaceState::loadError, "Web UI load failed: " + error);
+}
+
+void UTTWebView::reportFailure (SurfaceState state, const juce::String& reason)
+{
+    if (failureReported)
+        return;
+
+    failureReported = true;
+    frontendReady = false;
+    surfaceState = state;
+    stopTimer();
+    endActiveParameterGestures();
+
+    if (browser != nullptr)
+        browser->setVisible (false);
+
+    auto callback = failureHandler;
+    if (callback)
+        juce::MessageManager::callAsync ([callback = std::move (callback), state, reason]
+        {
+            callback (state, reason);
+        });
 }

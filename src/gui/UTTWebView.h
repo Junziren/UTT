@@ -1,74 +1,112 @@
 #pragma once
+
 #include <JuceHeader.h>
+
+#include <functional>
 #include <vector>
 
 class UTTProcessor;
 
-// WebView frontend host + native bridge (contract v1).
-//
-// JS -> native (registered as native functions, all called on the message
-// thread): uttUiReady, uttGesture{id,phase,value}, uttResetParam{id},
-// uttRecordBrowse, uttAbout, uttParamMenu{id}.
-//
-// native -> JS (via emitEventIfBrowserIsVisible):
-//   uttParamState {params:{id:{v,t}}}  - dirty subset, flushed ~30 Hz
-//   uttMeter      {lp,rp,lr,rr,corr,lm,ls,li} - ~25 Hz from atomics
-//   uttScope      {g,l[],r[]}          - ~12 Hz, decimated triple-buffer frame
-//   uttRecord     {on,active,path,error,dropped} - on change
-class UTTWebView : public juce::WebBrowserComponent,
-                   private juce::Timer,
-                   private juce::AudioProcessorValueTreeState::Listener
+// Owns UTT's embedded, offline WebView surface and its versioned native bridge.
+// The processor/APVTS remain the single source of truth for every parameter and
+// all telemetry. If WebView2 is unavailable or the document never becomes
+// ready, the owner receives a failure callback and presents the native fallback.
+class UTTWebView final : public juce::Component,
+                         private juce::Timer,
+                         private juce::AudioProcessorValueTreeState::Listener,
+                         private juce::WebViewLifetimeListener
 {
 public:
-    UTTWebView (UTTProcessor&, juce::AudioProcessorEditor& owner);
+    enum class SurfaceState
+    {
+        loading,
+        ready,
+        unavailable,
+        loadError
+    };
+
+    using FailureHandler = std::function<void (SurfaceState, juce::String)>;
+    using ReadyHandler = std::function<void()>;
+
+    UTTWebView (UTTProcessor&, juce::AudioProcessorEditor&, FailureHandler, ReadyHandler);
     ~UTTWebView() override;
 
-    // must be called after construction, once the component is on screen
     void loadInterface();
+    bool isReady() const noexcept { return surfaceState == SurfaceState::ready; }
 
-    void setBridgeActive (bool active);
-    bool isBridgeActive() const { return bridgeActive; }
+    void resized() override;
+    void visibilityChanged() override;
 
 private:
-    // Timer: transport (meters 25 Hz / scope 12 Hz / dirty params / record)
-    void timerCallback() override;
+    class Browser;
+    using Resource = juce::WebBrowserComponent::Resource;
+    using ResourceResult = std::optional<Resource>;
 
-    // APVTS::Listener (message thread): mark parameter dirty
+    static juce::WebBrowserComponent::Options makeBrowserOptions (UTTWebView&);
+    static ResourceResult getResource (const juce::String& url);
+    static juce::String getMimeType (const juce::String& path);
+
+    void webViewConstructed (juce::WebBrowserComponent*) override;
+    void webViewDestructed (juce::WebBrowserComponent*) override;
+
+    void timerCallback() override;
     void parameterChanged (const juce::String& parameterID, float newValue) override;
 
-    // bridge handlers
-    void handleGesture (const juce::var& payload, const juce::WebBrowserComponent::NativeFunctionCompletion&);
-    void handleResetParam (const juce::var& payload);
+    void handleUiReady();
+    void handleParameterGesture (const juce::var& payload);
+    void handleParameterReset (const juce::var& payload);
+    void handleParameterContext (const juce::var& payload);
     void handleRecordBrowse();
-    void handleAbout();
-    void handleParamMenu (const juce::var& payload);
 
-    juce::var buildSnapshot();
-    void flushDirtyParams();
-    void pushRecordState();
+    juce::var buildFullState() const;
+    juce::var describeParameter (const juce::AudioProcessorParameter&) const;
+    juce::var buildHeroState() const;
+    static juce::String formatParameterValue (const juce::AudioProcessorParameter&);
+    static juce::String formatParameterLabel (const juce::String& parameterID);
+
+    void sendFullState();
+    void flushDirtyParameters();
     void pushMeterFrame();
     void pushScopeFrame();
+    void pushRecordState();
+    void emitEvent (const juce::Identifier&, juce::var payload);
 
-    static juce::String formatParameterValue (const juce::AudioProcessorParameter& param);
+    void endActiveParameterGestures();
+    void setSurfaceActive (bool active);
+    void pageFinishedLoading (const juce::String& url);
+    void pageLoadFailed (const juce::String& error);
+    void reportFailure (SurfaceState, const juce::String& reason);
 
     UTTProcessor& processor;
     juce::AudioProcessorValueTreeState& apvts;
     juce::AudioProcessorEditor& editor;
+    FailureHandler failureHandler;
+    ReadyHandler readyHandler;
 
-    std::vector<float> scopeL, scopeR;
+    std::unique_ptr<Browser> browser;
+    juce::WebBrowserComponent* constructedBrowser = nullptr;
+
+    std::vector<float> scopeL;
+    std::vector<float> scopeR;
     std::uint64_t lastScopeGeneration = 0;
+    std::uint64_t lastDroppedSeen = 0;
     int tick = 0;
 
-    bool bridgeActive = false;
+    bool interfaceRequested = false;
+    bool frontendReady = false;
+    bool surfaceActive = true;
+    bool failureReported = false;
+    bool lastRecordOn = false;
+    bool lastRecordActive = false;
     bool recordErrorPending = false;
-    std::uint64_t lastDroppedSeen = 0;
-    bool lastRecordOn = false, lastRecordActive = false;
+    juce::uint32 readyDeadlineMs = 0;
+    SurfaceState surfaceState = SurfaceState::loading;
+
     juce::String lastRecordPath;
+    juce::String lastTouchedParameterID { "gain" };
+    juce::StringArray dirtyParameters;
+    juce::StringArray listenedParameters;
+    juce::Array<juce::AudioProcessorParameter*> activeParameterGestures;
 
-    // dirty parameter ids pending flush to the UI
-    juce::StringArray dirtyParams;
-    juce::StringArray listenedParams;
-    juce::Array<juce::Identifier> eventNames;
-
-    JUCE_DECLARE_NON_COPYABLE (UTTWebView)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UTTWebView)
 };

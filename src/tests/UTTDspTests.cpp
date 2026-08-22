@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "BinaryData.h"
 #include "PluginProcessor.h"
 #include "Parameters.h"
 #include "dsp/DCOffset.h"
@@ -574,7 +575,56 @@ public:
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 0; i < n; ++i)
                     expectEquals(b.getSample(ch, i), ref.getSample(ch, i),
-                                 "defaults must process bit-exact (all modules neutral)");
+                                  "defaults must process bit-exact (all modules neutral)");
+        }
+
+        beginTest("non-silent processing advances the UI telemetry snapshots");
+        {
+            constexpr double sampleRate = 48000.0;
+            constexpr int blockSize = 480;
+
+            UTTProcessor proc;
+            proc.prepareToPlay(sampleRate, blockSize);
+            juce::MidiBuffer midi;
+
+            // Fill more than the scope's 50 ms capture window so its frame is
+            // entirely sourced from the processor's post-chain signal.
+            for (int block = 0; block < 8; ++block)
+            {
+                juce::AudioBuffer<float> buffer(2, blockSize);
+                fillSine(buffer, 0, 997.0, sampleRate, 0.5, 0.0, block * blockSize);
+                fillSine(buffer, 1, 997.0, sampleRate, 0.25, 0.0, block * blockSize);
+                proc.processBlock(buffer, midi);
+            }
+
+            const auto& metering = proc.getMetering();
+            expect(metering.getLPeak() > -7.0f && metering.getLPeak() < -5.0f,
+                   "left peak should reflect the processed 0.5-amplitude sine");
+            expect(metering.getRPeak() > -13.0f && metering.getRPeak() < -11.0f,
+                   "right peak should reflect the processed 0.25-amplitude sine");
+            expect(metering.getLRMS() > -30.0f && metering.getRRMS() > -36.0f,
+                   "RMS snapshots must leave their silent floor");
+
+            std::vector<float> scopeL, scopeR;
+            const auto generation = proc.getOscilloscope().copyLatestFrame(scopeL, scopeR);
+            expect(generation != 0, "processor must publish a scope frame after audio");
+            expectEquals(static_cast<int>(scopeL.size()), UTT::Oscilloscope::maxPoints,
+                         "left scope frame has the UI transport size");
+            expectEquals(static_cast<int>(scopeR.size()), UTT::Oscilloscope::maxPoints,
+                         "right scope frame has the UI transport size");
+
+            auto peakMagnitude = [] (const std::vector<float>& samples)
+            {
+                float peak = 0.0f;
+                for (const auto sample : samples)
+                    peak = juce::jmax(peak, std::abs(sample));
+                return peak;
+            };
+
+            expect(peakMagnitude(scopeL) > 0.45f,
+                   "left scope snapshot must contain the real signal, not a static baseline");
+            expect(peakMagnitude(scopeR) > 0.20f,
+                   "right scope snapshot must contain the real signal, not a static baseline");
         }
 
         beginTest("mono input is duplicated and metered, output returns L");
@@ -732,6 +782,174 @@ public:
 };
 
 //==============================================================================
+class WebUIContractTests : public juce::UnitTest
+{
+public:
+    WebUIContractTests() : juce::UnitTest("WebUIContract", "UTT") {}
+
+    void runTest() override
+    {
+        const auto sourceRoot = juce::File (UTT_SOURCE_DIR);
+        const auto readSource = [&sourceRoot] (const char* relativePath)
+        {
+            return sourceRoot.getChildFile (relativePath).loadFileAsString();
+        };
+
+        const auto html = readSource ("resources/ui/index.html");
+        const auto css = readSource ("resources/ui/styles.css");
+        const auto script = readSource ("resources/ui/app.js");
+        const auto host = readSource ("src/gui/UTTWebView.cpp");
+        const auto editor = readSource ("src/PluginEditor.cpp");
+        const auto cmake = readSource ("CMakeLists.txt");
+        const auto installer = readSource ("installer/Installer.cs");
+        const auto installerBuild = readSource ("installer/build-installer.ps1");
+
+        beginTest("offline assets, CSP and BinaryData whitelist");
+        expect (html.isNotEmpty(), "index.html must exist");
+        expect (css.isNotEmpty(), "styles.css must exist");
+        expect (script.isNotEmpty(), "app.js must exist");
+        expect (html.contains ("default-src 'none'"), "CSP must fail closed by default");
+        expect (html.contains ("style-src 'self'"), "CSP must allow only local CSS");
+        expect (html.contains ("script-src 'self'"), "CSP must allow only local script");
+        expect (! html.containsIgnoreCase ("http://") && ! html.containsIgnoreCase ("https://")
+                    && ! css.containsIgnoreCase ("http://") && ! css.containsIgnoreCase ("https://")
+                    && ! script.containsIgnoreCase ("http://") && ! script.containsIgnoreCase ("https://"),
+                "embedded Web UI must not request network resources");
+        expect (cmake.contains ("resources/ui/index.html")
+                    && cmake.contains ("resources/ui/styles.css")
+                    && cmake.contains ("resources/ui/app.js"),
+                "CMake must embed exactly the rebuilt Web UI assets");
+        expect (! cmake.contains ("resources/ui/utt.css") && ! cmake.contains ("resources/ui/utt.js"),
+                "retired Web UI assets must not be embedded");
+        expect (host.contains ("allowedResources { \"index.html\", \"styles.css\", \"app.js\" }"),
+                "resource provider must use the three-file whitelist");
+        expect (host.contains ("uiBuildPlaceholder") && host.contains ("document.replace"),
+                "index HTML must receive the generated UI build ID");
+
+        juce::StringArray embeddedNames;
+        for (int index = 0; index < BinaryData::namedResourceListSize; ++index)
+        {
+            const auto* resourceName = BinaryData::namedResourceList[index];
+            embeddedNames.add (juce::File (
+                BinaryData::getNamedResourceOriginalFilename (resourceName)).getFileName());
+        }
+        embeddedNames.sort (true);
+        expectEquals (embeddedNames.size(), 3, "only the rebuilt UI files are embedded");
+        expect (embeddedNames.contains ("index.html")
+                    && embeddedNames.contains ("styles.css")
+                    && embeddedNames.contains ("app.js"),
+                "BinaryData must contain every whitelisted UI asset");
+
+        beginTest("bridge names and parameter coverage are fixed");
+        const char* const uiToNative[] {
+            "uiReady", "parameterGesture", "parameterReset", "parameterContext", "recordBrowse"
+        };
+        for (const auto* eventName : uiToNative)
+        {
+            const auto event = juce::String (eventName);
+            expect (script.contains ("emit(\"" + event + "\""),
+                    "UI must emit " + event);
+            expect (host.contains ("withEventListener (\"" + event + "\""),
+                    "host must receive " + event);
+        }
+
+        const char* const nativeToUI[] {
+            "fullState", "parameterState", "meterFrame", "scopeFrame", "recordState", "surfaceVisibility"
+        };
+        for (const auto* eventName : nativeToUI)
+        {
+            const auto event = juce::String (eventName);
+            expect (host.contains ("emitEvent (\"" + event + "\""),
+                    "host must publish " + event);
+            expect (script.contains ("addEventListener(\"" + event + "\""),
+                    "UI must consume " + event);
+        }
+
+        const auto parameterConfig = juce::JSON::parse (
+            sourceRoot.getChildFile ("config/parameters-v2.json"));
+        const auto* parameters = parameterConfig.getProperty ("parameters", {}).getArray();
+        expect (parameters != nullptr, "parameter contract must parse for UI coverage");
+        if (parameters != nullptr)
+        {
+            expectEquals (static_cast<int> (parameters->size()), 18,
+                          "UTT v2 ABI has exactly 18 parameters");
+            for (const auto& parameter : *parameters)
+            {
+                const auto id = parameter.getProperty ("id", {}).toString();
+                expect (script.contains ("\"" + id + "\""),
+                        "UI must render ABI parameter " + id);
+            }
+        }
+
+        beginTest("Swiss IKB surface and input lifecycle remain guarded");
+        expect (css.contains ("--paper: #fafaf8") && css.contains ("--ink: #0a0a0a")
+                    && css.contains ("--accent: #002fa7"),
+                "paper, ink and IKB tokens must remain stable");
+        expect (! css.contains ("box-shadow"), "Swiss surface must not add soft shadows");
+        expect (css.contains ("overflow: hidden"), "document root must not scroll");
+        expect (! css.contains ("#5b7bff") && ! script.contains ("#5b7bff"),
+                "IKB must remain the only chromatic waveform accent");
+        expect (script.contains ("STATIC PREVIEW / NO NATIVE BRIDGE")
+                    && script.contains ("PREVIEW USES NO SIMULATED TELEMETRY")
+                    && ! script.contains ("setInterval"),
+                "browser preview must stay explicitly static");
+        expect (script.contains ("pointercancel") && script.contains ("lostpointercapture")
+                    && script.contains ("window.addEventListener(\"blur\", finish)")
+                    && script.contains ("pagehide") && script.contains ("dblclick"),
+                "continuous gestures must close on cancel, blur, unload and reset");
+        expect (host.contains ("SurfaceState::unavailable")
+                    && host.contains ("SurfaceState::loadError")
+                    && host.contains ("SurfaceState::ready")
+                    && editor.contains ("\"LOADING\""),
+                "native loading, ready, unavailable and load-error states must be explicit");
+
+        beginTest("compact parameter help and openFAD About identity remain available");
+        expect (script.contains ("const parameterHelp = Object.freeze")
+                    && script.contains ("showParameterHelp")
+                    && script.contains ("positionParameterHelp")
+                    && script.contains ("aria-description"),
+                "every parameter control needs an accessible hover/focus help surface");
+        expect (script.contains ("parameter-help-route")
+                    && script.contains ("ENC: L/R -> M=(L+R)/2 | S=(L-R)/2")
+                    && script.contains ("Decode 则把 M/S 还原为 L=M+S、R=M-S"),
+                "M/S help must state the real encode and decode signal paths");
+        expect (css.contains (".parameter-help") && css.contains ("position: fixed")
+                    && css.contains ("pointer-events: none"),
+                "parameter help must float above the grid without intercepting controls");
+        expect (html.contains ("id=\"heroField\"")
+                    && script.contains ("triggerParameterFeedback")
+                    && css.contains (".hero.gesture-active")
+                    && css.contains ("prefers-reduced-motion: reduce"),
+                "local control feedback must be bounded and respect reduced motion");
+        expect (css.contains ("grid-template-rows: 38px 92px minmax(0, 1fr) 58px 22px"),
+                "the default surface must retain its compact fixed chrome layout");
+        expect (html.contains ("openFAD / UTT") && html.contains ("openFAD AUDIO TOOLS")
+                    && html.contains ("<dd>openFAD</dd>"),
+                "About must identify the openFAD product family");
+        if (parameters != nullptr)
+            for (const auto& parameter : *parameters)
+            {
+                const auto id = parameter.getProperty ("id", {}).toString();
+                expect (script.contains (id + ": {"),
+                        "parameter help must cover ABI parameter " + id);
+            }
+
+        beginTest("Windows installer embeds verified prerequisites and canonical artefacts");
+        expect (installer.contains ("MicrosoftEdgeWebView2RuntimeInstallerX64.exe")
+                    && installer.contains ("VC_redist.x64.exe")
+                    && installer.contains ("UTTInstaller.Payload.LICENSE.txt")
+                    && installer.contains ("SpecialFolder.CommonProgramFiles")
+                    && installer.contains ("\"VST3\""),
+                "installer must package WebView2, VC++ and install only to the standard VST3 root");
+        expect (installerBuild.contains ("https://go.microsoft.com/fwlink/p/?LinkId=2124701")
+                    && installerBuild.contains ("https://aka.ms/vs/17/release/vc_redist.x64.exe")
+                    && installerBuild.contains ("Get-AuthenticodeSignature")
+                    && installerBuild.contains ("UTT_artefacts\\Release"),
+                "packaging must verify Microsoft payloads and consume the canonical Release artefacts");
+    }
+};
+
+//==============================================================================
 static PhaseProcessorTests     phaseProcessorTests;
 static DCOffsetTests           dcOffsetTests;
 static ChannelProcessorTests   channelProcessorTests;
@@ -741,6 +959,7 @@ static OscilloscopeTests       oscilloscopeTests;
 static RecorderTests           recorderTests;
 static ProcessorTests          processorTests;
 static ParameterContractTests  parameterContractTests;
+static WebUIContractTests      webUIContractTests;
 
 //==============================================================================
 class ConsoleLogger : public juce::Logger

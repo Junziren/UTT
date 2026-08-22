@@ -2,6 +2,7 @@
 build/
 build-*/
 cmake-build-*/
+dist/
 
 # Validation / test output (regenerable)
 tests/results/UTT.vst3_*.txt
@@ -22,3 +23,7 @@ theme_fix.patch
 # Local tooling
 .zcode/
 .DS_Store
+
+# Installer staging
+installer/payload/
+installer/cache/

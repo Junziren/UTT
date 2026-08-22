@@ -14,10 +14,22 @@ add_subdirectory(juce)
 # ---------------------------------------------------------------------------
 # Embedded WebView frontend (offline, served via ResourceProvider)
 # ---------------------------------------------------------------------------
+set(UTT_UI_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/ui/index.html"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/ui/styles.css"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/ui/app.js")
+
+# Reconfigure when an embedded UI asset changes so the cache-busting token is
+# regenerated alongside BinaryData.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${UTT_UI_SOURCES})
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/resources/ui/index.html" UTT_UI_HTML_HASH)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/resources/ui/styles.css" UTT_UI_CSS_HASH)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/resources/ui/app.js" UTT_UI_JS_HASH)
+string(SHA256 UTT_UI_BUILD_HASH "${UTT_UI_HTML_HASH}${UTT_UI_CSS_HASH}${UTT_UI_JS_HASH}")
+string(SUBSTRING "${UTT_UI_BUILD_HASH}" 0 12 UTT_UI_BUILD_ID)
+
 juce_add_binary_data(UTTUI
-    SOURCES resources/ui/index.html
-            resources/ui/utt.css
-            resources/ui/utt.js)
+    SOURCES ${UTT_UI_SOURCES})
 
 set(UTT_SOURCES
     src/PluginProcessor.cpp
@@ -82,6 +94,7 @@ target_compile_definitions(UTT PRIVATE
     JUCE_USE_WIN_WEBVIEW2=1
     JUCE_USE_CURL=0
     JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
+    UTT_UI_BUILD_ID="${UTT_UI_BUILD_ID}"
 )
 
 # ---------------------------------------------------------------------------
@@ -120,4 +133,13 @@ target_compile_definitions(UTTTests PRIVATE
     JUCE_USE_WIN_WEBVIEW2=1
     JUCE_USE_CURL=0
     JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
-    UTT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    UTT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    UTT_UI_BUILD_ID="${UTT_UI_BUILD_ID}")
+
+# NEEDS_WEBVIEW2 links WebView2LoaderStatic.lib, while JUCE needs this
+# definition to call the statically linked loader instead of searching for a
+# WebView2Loader.dll beside the plugin.
+if(WIN32)
+    target_compile_definitions(UTT PRIVATE JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1)
+    target_compile_definitions(UTTTests PRIVATE JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1)
+endif()

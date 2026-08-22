@@ -1,17 +1,20 @@
 #pragma once
 #include <JuceHeader.h>
+#include <functional>
 #include <memory>
 #include <vector>
 
 class UTTProcessor;
 
-// Minimal native fallback when the WebView2 runtime is unavailable.
-// Plain juce controls + APVTS attachments; no theme system, no meters.
-// Audio functionality is completely unaffected by this panel.
+// Functional native fallback for WebView2/runtime/load failures. It keeps all
+// host parameters available rather than leaving an editor-sized blank surface.
 class FallbackPanel : public juce::Component
 {
 public:
-    explicit FallbackPanel (UTTProcessor&);
+    using RetryHandler = std::function<void()>;
+
+    FallbackPanel (UTTProcessor&, const juce::String& surfaceState,
+                   const juce::String& detail, RetryHandler);
 
     void resized() override;
     void paint (juce::Graphics&) override;
@@ -22,7 +25,10 @@ private:
     UTTProcessor& processor;
     juce::AudioProcessorValueTreeState& apvts;
 
+    juce::Label titleLabel;
     juce::Label noticeLabel;
+    juce::TextButton retryButton { "RETRY WEB UI" };
+    bool retryVisible = false;
     struct Row
     {
         std::unique_ptr<juce::Label> label;

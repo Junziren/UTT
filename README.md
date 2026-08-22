@@ -46,6 +46,8 @@ v0.3.0 完成 DSP 正确性重写（BS.1770 响度、实时安全录音、参数
 
 - **WebView2 离线内嵌 UI**（纸面仪器风格：纸色面板、方角硬边、深色显示井、机械开关/旋钮）
 - 旋钮协议：拖拽 320px 行程（Shift 精细 1600px）、滚轮微调、双击复位、右键转宿主参数菜单、完整键盘操作
+- 所有参数支持悬停与键盘聚焦说明，包含实际信号路径；M/S 明示 L/R 与 Mid/Side 的编码、解码公式
+- IKB 参数反馈只在直接操作时短暂显示，支持 `prefers-reduced-motion`，不伪造 meter 或 scope 数据
 - 未安装 WebView2 运行时时自动降级为极简原生面板（音频功能不受影响）
 
 ---
@@ -55,7 +57,7 @@ v0.3.0 完成 DSP 正确性重写（BS.1770 响度、实时安全录音、参数
 ### 从安装包 (推荐)
 
 1. 运行 UTT_Setup.exe
-2. 按照向导完成安装
+2. 安装器会先处理 WebView2 Evergreen 离线运行库与 VC++ x64 运行库
 3. VST3 插件将安装至 C:\Program Files\Common Files\VST3\
 4. 重新启动 DAW 以识别新插件
 
@@ -95,24 +97,33 @@ C:\Program Files\Common Files\VST3\
 git clone --recurse-submodules <repo-url>
 cd UTT
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target UTT
+cmake --build build --target UTT_All UTTTests
 ```
 
 ### 单元测试
 
 ```powershell
-cmake --build build --target UTTTests
+cmake --build build --target UTT_All UTTTests
 ./build/UTTTests_artefacts/Release/UTTTests.exe
 ```
 
 覆盖：LUFS -23 LUFS 校准信号、相位偏移 1kHz 验证、参数契约
 （config/parameters-v2.json ↔ Parameters.h）、录音 FIFO、旧版状态迁移。
 
+### Windows 发布包
+
+```powershell
+.\installer\build-installer.ps1 -DownloadPrerequisites
+```
+
+输出目录为 `dist\UTT-0.3.0-windows-x64\`，包含 VST3、Standalone、单文件
+`UTT_Setup.exe` 与 `SHA256SUMS.txt`。安装器的前置运行库签名会在打包前校验。
+
 ### macOS / Apple 车道
 
 ```bash
 cmake -B build-mac -G Xcode -DCMAKE_BUILD_TYPE=Release   # VST3 + AU + AUv3
-cmake --build build-mac --config Release --target UTT
+cmake --build build-mac --config Release --target UTT_All UTTTests
 ```
 
 AUv3/iOS 为**预备车道**，本仓库尚无 Apple 侧验证证据，
@@ -144,7 +155,7 @@ UTT/
 ├── docs/
 │   ├── IDENTIFIERS.md      # 标识符冻结合同（bundle id / FourCC / 参数 ID）
 │   └── APPLE_LANE.md       # AUv3 预备车道与验收清单（UNVERIFIED）
-├── resources/ui/           # WebView 前端（index.html / utt.css / utt.js，离线打包）
+├── resources/ui/           # WebView 前端（index.html / styles.css / app.js，离线打包）
 ├── src/
 │   ├── PluginProcessor.cpp # DSP 链路与状态
 │   ├── PluginEditor.cpp    # 编辑器宿主（WebView / 原生降级）
@@ -165,7 +176,7 @@ UTT/
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| **v0.3.0** | 2026-08-22 | DSP 正确性重写（BS.1770 LUFS、录音实时安全、参数平滑、伪参数清理 v2）；WebView2 纸面仪器 UI；AUv3 预备车道；pluginval strictness 10 |
+| **v0.3.0** | 2026-08-22 | DSP 正确性重写（BS.1770 LUFS、录音实时安全、参数平滑、伪参数清理 v2）；WebView2 纸面仪器 UI、参数信号路径帮助与局部 IKB 反馈；离线运行库安装器；pluginval strictness 10 |
 | v0.2.0 | 2026-06-04 | 录制功能完成，About 界面，品牌更名 UnpureBloom |
 | v0.1.0 | 2026-05 | 初始版本，基础 DSP + GUI |
 
