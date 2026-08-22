@@ -83,9 +83,11 @@ UTTEditor::UTTEditor(UTTProcessor& p) : AudioProcessorEditor(&p), processor(p), 
     themeCombo.addItem("Channel Strip", 1);
     themeCombo.addItem("Dark Modern", 2);
     themeCombo.addItem("Retro Light", 3);
+    themeCombo.setSelectedItemIndex(processor.getUiTheme(), juce::dontSendNotification);
     themeCombo.onChange = [this]()
     {
         int idx = themeCombo.getSelectedItemIndex();
+        processor.setUiTheme(idx);
         applyTheme(idx);
     };
     addAndMakeVisible(themeCombo);
@@ -97,7 +99,6 @@ UTTEditor::UTTEditor(UTTProcessor& p) : AudioProcessorEditor(&p), processor(p), 
 
     addAndMakeVisible(aboutOverlay);
     aboutOverlay.setVisible(false);
-    addComboAttach("themeIndex", themeCombo);
 
     // ── Input ────────────────────────────────────────────
     inputGroup.setText("INPUT");
@@ -332,12 +333,20 @@ void UTTEditor::timerCallback()
     meterL.setLevel(m.getLPeak(), m.getLRMS());
     meterR.setLevel(m.getRPeak(), m.getRRMS());
 
-    // Scope
-    auto& srcPts = processor.getOscilloscope().getPoints();
-    std::vector<juce::Point<float>> jpts;
-    jpts.reserve(srcPts.size());
-    for (auto& p : srcPts) jpts.push_back({p.x, p.y});
-    scope.setPoints(jpts);
+    // Scope (lock-free snapshot; skip rebuild when nothing new published)
+    if (const auto gen = processor.getOscilloscope().copyLatestFrame(scopeL, scopeR); gen != 0)
+    {
+        if (gen != lastScopeGeneration)
+        {
+            lastScopeGeneration = gen;
+            scopePoints.clear();
+            const int count = static_cast<int>(juce::jmin(scopeL.size(), scopeR.size()));
+            scopePoints.reserve(static_cast<size_t>(count));
+            for (int i = count - 1; i >= 0; --i) // oldest -> newest
+                scopePoints.push_back({scopeL[static_cast<size_t>(i)], scopeR[static_cast<size_t>(i)]});
+            scope.setPoints(scopePoints);
+        }
+    }
 
     // Phase correlation
     phaseBar.setCorrelation(processor.getPhaseMeter().getCorrelation());

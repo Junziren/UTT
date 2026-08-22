@@ -6,8 +6,8 @@ void PhaseProcessor::prepare(double sr, int) { sampleRate = sr; }
 
 void PhaseProcessor::reset()
 {
-    apL = apR = 0.0f;
-    apCoeff = 0.0f;
+    z1L = z1R = 0.0f;
+    z2L = z2R = 0.0f;
 }
 
 void PhaseProcessor::setInvert(bool invertL, bool invertR)
@@ -18,12 +18,28 @@ void PhaseProcessor::setInvert(bool invertL, bool invertR)
 
 void PhaseProcessor::setPhaseOffset(float degrees)
 {
-    // Map 0~360 degrees to allpass coefficient for fixed 1kHz center
-    // For a 1st-order allpass: phi = -2*atan(omega/omega0) + pi
-    // We approximate with a simple coefficient based on degrees
-    float norm = degrees / 360.0f;
-    // Use a simple allpass at 1kHz: map 0-360 to coefficient -0.99..0.99
-    apCoeff = -0.99f + 1.98f * norm;
+    phaseDegrees = juce::jlimit(0.0f, 360.0f, degrees);
+
+    // Two cascaded 1st-order allpass sections, each contributing half the
+    // requested shift at referenceFrequency. For H(z) = (c + z^-1)/(1 + c z^-1)
+    // the phase at f is phi = -2 atan( tan(pi f / fs) * (1-c)/(1+c) ), so the
+    // coefficient realising a per-section shift of theta at f0 is
+    //   c = (1 - r) / (1 + r),   r = tan(theta / 2) / tan(pi f0 / fs)
+    // The pole approaches -1 as the request nears 360 degrees; r is clamped
+    // so it stays inside the unit circle. A first-order pair cannot hold the
+    // shift constant across the spectrum - the knob is exact at 1 kHz only.
+    const float theta = juce::degreesToRadians(phaseDegrees) * 0.5f;
+    const float t0 = std::tan(juce::MathConstants<float>::pi
+                              * static_cast<float>(referenceFrequency)
+                              / static_cast<float>(sampleRate));
+    float r = std::tan(theta * 0.5f) / t0;
+    r = std::min(r, 1000.0f);
+    apCoeff = (1.0f - r) / (1.0f + r);
+    if (!(apCoeff > -1.0f && apCoeff < 1.0f)) // NaN / degenerate sample rate guard
+    {
+        apCoeff = 0.0f;
+        phaseDegrees = 0.0f;
+    }
 }
 
 void PhaseProcessor::process(juce::AudioBuffer<float>& buffer)
@@ -32,24 +48,33 @@ void PhaseProcessor::process(juce::AudioBuffer<float>& buffer)
     auto* R = buffer.getWritePointer(1);
     const int n = buffer.getNumSamples();
 
-    if (invL || invR || std::abs(apCoeff) > 0.001f)
-    {
-        for (int i = 0; i < n; ++i)
-        {
-            // Phase invert
-            if (invL) L[i] = -L[i];
-            if (invR) R[i] = -R[i];
+    const bool runAllpass = phaseDegrees >= 0.05f;
+    const float c = apCoeff;
 
-            // 1st-order allpass filter for phase offset
-            if (std::abs(apCoeff) > 0.001f)
-            {
-                float xL = L[i], xR = R[i];
-                L[i] = apCoeff * xL + apL;
-                R[i] = apCoeff * xR + apR;
-                apL = xL - apCoeff * L[i];
-                apR = xR - apCoeff * R[i];
-            }
+    if (!invL && !invR && !runAllpass)
+        return;
+
+    for (int i = 0; i < n; ++i)
+    {
+        float xl = L[i], xr = R[i];
+
+        if (invL) xl = -xl;
+        if (invR) xr = -xr;
+
+        if (runAllpass)
+        {
+            float yl = c * xl + z1L;  z1L = xl - c * yl;
+            float yr = c * xr + z1R;  z1R = xr - c * yr;
+
+            float y2l = c * yl + z2L; z2L = yl - c * y2l;
+            float y2r = c * yr + z2R; z2R = yr - c * y2r;
+
+            xl = y2l;
+            xr = y2r;
         }
+
+        L[i] = xl;
+        R[i] = xr;
     }
 }
 

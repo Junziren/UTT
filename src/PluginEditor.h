@@ -1,5 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
+#include <cstdint>
+#include <vector>
 #include "gui/theme/UTTLookAndFeel.h"
 #include "gui/theme/ThemeLoader.h"
 #include "gui/controls/Controls.h"
@@ -78,6 +80,11 @@ private:
     std::vector<VUMeterBar*> meters;
     std::vector<PhaseCorrelationBar*> phaseBars;
     std::vector<UTTScope*> scopes;
+
+    // Scope snapshot buffers (reused, no per-tick allocation)
+    std::vector<float> scopeL, scopeR;
+    std::vector<juce::Point<float>> scopePoints;
+    std::uint64_t lastScopeGeneration = 0;
 
     JUCE_DECLARE_NON_COPYABLE(UTTEditor)
 };

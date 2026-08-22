@@ -4,6 +4,11 @@ project(UTT VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+    # JUCE/HarfBuzz sources are UTF-8; avoid code-page 936 warnings and mojibake
+    add_compile_options(/utf-8)
+endif()
+
 add_subdirectory(juce)
 
 set(UTT_SOURCES
@@ -52,3 +57,23 @@ target_compile_definitions(UTT PRIVATE
     JUCE_USE_CURL=0
     JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
 )
+
+# ---------------------------------------------------------------------------
+# Console unit-test runner (DSP calibration, contract, recorder, state)
+# ---------------------------------------------------------------------------
+juce_add_console_app(UTTTests
+    PRODUCT_NAME "UTTTests"
+    COMPANY_NAME "UnpureBloom")
+
+target_sources(UTTTests PRIVATE ${UTT_SOURCES} src/tests/UTTDspTests.cpp)
+target_include_directories(UTTTests PRIVATE src src/util)
+target_link_libraries(UTTTests PRIVATE
+    juce::juce_audio_processors
+    juce::juce_audio_formats
+    juce::juce_gui_basics)
+
+target_compile_definitions(UTTTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
+    UTT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

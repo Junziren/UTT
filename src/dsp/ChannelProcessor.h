@@ -9,17 +9,19 @@ public:
     void prepare(double sr, int blockSize);
     void reset();
 
-    void setMonoMode(int mode);        // 0=Off, 1=L+R Sum, 2=Mid Only, 3=Side Only
-    void setSeparation(float percent); // 0-100
-    void setMonoToStereo(int mode);    // 0=Off, 1=L->Both, 2=R->Both
+    void setMonoMode(int mode);            // 0=Off, 1=L+R Sum, 2=Mid Only, 3=Side Only
+    void setSeparation(float percent);     // 0-100, smoothed
+    void setSeparationImmediate(float percent);
+    void setMonoToStereo(int mode);        // 0=Off, 1=L->Both, 2=R->Both
 
-    void process(juce::AudioBuffer<float>& buffer);
-    void processPostSeparation(juce::AudioBuffer<float>& buffer);
+    void process(juce::AudioBuffer<float>& buffer);            // mono modes
+    void processPostSeparation(juce::AudioBuffer<float>& buffer); // separation + mono-to-stereo copy
     void swap(juce::AudioBuffer<float>& buffer);
 
 private:
     int monoMode = 0;
     float separation = 1.0f; // 0.0-1.0 (0%=mono, 100%=stereo)
+    juce::SmoothedValue<float> separationSm { 1.0f };
     int m2sMode = 0;
 };
 

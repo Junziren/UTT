@@ -2,6 +2,7 @@
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cmath>
 
 UTTProcessor::UTTProcessor()
     : juce::AudioProcessor(BusesProperties()
@@ -16,26 +17,27 @@ UTTProcessor::~UTTProcessor() = default;
 
 bool UTTProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
-    // Accept any layout with at least 1 channel per bus
-    // Our processBlock handles mono internally by duplicating to stereo
-    auto inputChans  = layouts.getMainInputChannels();
-    auto outputChans = layouts.getMainOutputChannels();
+    // The chain is stereo internally; we honestly declare only the layouts we
+    // actually process end-to-end (mono input is duplicated, mono output
+    // receives the processed left channel).
+    const auto& in  = layouts.getMainInputChannelSet();
+    const auto& out = layouts.getMainOutputChannelSet();
 
-    // Need at least 1 channel on each side
-    if (inputChans == 0 || outputChans == 0)
-        return false;
+    if (in == juce::AudioChannelSet::stereo() && out == juce::AudioChannelSet::stereo())
+        return true;
+    if (in == juce::AudioChannelSet::mono() && out == juce::AudioChannelSet::stereo())
+        return true;
+    if (in == juce::AudioChannelSet::mono() && out == juce::AudioChannelSet::mono())
+        return true;
 
-    // Accept any channel count from 1-8
-    if (inputChans > 8 || outputChans > 8)
-        return false;
-
-    // Must be same channel count on both sides OR mono->stereo OK
-    return true;
+    return false;
 }
 
 void UTTProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     UTT_TRACE();
+    stereoScratch.setSize(2, juce::jmax(32, samplesPerBlock), false, false, true);
+
     dcOffset.prepare(sampleRate, samplesPerBlock);
     phaseProc.prepare(sampleRate, samplesPerBlock);
     gainStage.prepare(sampleRate, samplesPerBlock);
@@ -47,6 +49,8 @@ void UTTProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     oscilloscope.prepare(sampleRate, samplesPerBlock);
     lufsMeter.prepare(sampleRate, samplesPerBlock);
     recorder.prepare(sampleRate, samplesPerBlock);
+
+    resetSmoothedValues();
 }
 
 void UTTProcessor::releaseResources()
@@ -64,129 +68,174 @@ void UTTProcessor::releaseResources()
     recorder.reset();
 }
 
+void UTTProcessor::readChainParameters()
+{
+    bool invL = false, invR = false;
+    float phaseDeg = 0.0f;
+    if (auto* p = apvts.getRawParameterValue("phaseInvertL")) invL = p->load() > 0.5f;
+    if (auto* p = apvts.getRawParameterValue("phaseInvertR")) invR = p->load() > 0.5f;
+    if (auto* p = apvts.getRawParameterValue("phaseOffset"))  phaseDeg = p->load();
+    phaseProc.setInvert(invL, invR);
+    phaseProc.setPhaseOffset(phaseDeg);
+
+    if (auto* p = apvts.getRawParameterValue("gain"))
+        gainStage.setGain(p->load());
+
+    if (auto* p = apvts.getRawParameterValue("msMode"))
+        msProc.setMode(static_cast<int>(p->load()));
+
+    if (auto* p = apvts.getRawParameterValue("monoMode"))
+        channelProc.setMonoMode(static_cast<int>(p->load()));
+    if (auto* p = apvts.getRawParameterValue("stereoSeparation"))
+        channelProc.setSeparation(p->load());
+    if (auto* p = apvts.getRawParameterValue("monoToStereo"))
+        channelProc.setMonoToStereo(static_cast<int>(p->load()));
+
+    bool swap = false;
+    if (auto* p = apvts.getRawParameterValue("channelSwap"))
+        swap = p->load() > 0.5f;
+
+    if (auto* p = apvts.getRawParameterValue("pan"))
+        panner.setPan(p->load());
+
+    float outLGain = 0.0f, outRGain = 0.0f;
+    bool muteL = false, muteR = false, soloL = false, soloR = false;
+    if (auto* p = apvts.getRawParameterValue("outputLGain")) outLGain = p->load();
+    if (auto* p = apvts.getRawParameterValue("outputRGain")) outRGain = p->load();
+    if (auto* p = apvts.getRawParameterValue("outputLMute")) muteL = p->load() > 0.5f;
+    if (auto* p = apvts.getRawParameterValue("outputRMute")) muteR = p->load() > 0.5f;
+    if (auto* p = apvts.getRawParameterValue("outputLSolo")) soloL = p->load() > 0.5f;
+    if (auto* p = apvts.getRawParameterValue("outputRSolo")) soloR = p->load() > 0.5f;
+    gainStage.setOutputStage(outLGain, outRGain, muteL, muteR, soloL, soloR);
+
+    doSwapCurrent = swap;
+}
+
+void UTTProcessor::processStereoChunk(juce::AudioBuffer<float>& buffer, int)
+{
+    // 1. DC offset removal (parameter is a bypass; on = filter engaged)
+    bool dcOn = false;
+    if (auto* p = apvts.getRawParameterValue("dcOffsetBypass"))
+        dcOn = !(p->load() > 0.5f);
+    if (dcOn)
+        dcOffset.process(buffer);
+
+    readChainParameters();
+
+    // 2. Phase invert + phase offset
+    phaseProc.process(buffer);
+
+    // 3. Input gain
+    gainStage.process(buffer);
+
+    // 4. MS encode/decode
+    msProc.process(buffer);
+
+    // 5. Mono operations
+    channelProc.process(buffer);
+
+    // 6. Stereo separation + mono-to-stereo copy
+    channelProc.processPostSeparation(buffer);
+
+    // 7. Channel swap
+    if (doSwapCurrent)
+        channelProc.swap(buffer);
+
+    // 8. Pan
+    panner.process(buffer);
+
+    // 9. Output stage (gains + mute/solo)
+    gainStage.processOutputStage(buffer);
+
+    // Analysis (post-chain, never alters audio)
+    metering.process(buffer);
+    phaseMeter.process(buffer);
+    oscilloscope.process(buffer);
+    lufsMeter.process(buffer);
+}
+
 void UTTProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
 
-    auto numChannels = buffer.getNumChannels();
-    if (numChannels == 0)
+    const int totalSamples = buffer.getNumSamples();
+    if (totalSamples == 0 || buffer.getNumChannels() == 0)
         return;
 
-    // Handle mono input: create a temporary stereo buffer for internal processing
-    bool wasMono = (numChannels < 2);
-    juce::AudioBuffer<float> stereoBuffer;
-    juce::AudioBuffer<float>* procBuf = &buffer;
-
-    if (wasMono)
+    // Sanitise non-finite input before anything else can latch onto it.
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
     {
-        // Duplicate the mono input to both L and R for stereo DSP chain
-        stereoBuffer.setSize(2, buffer.getNumSamples(), false, false, true);
-        stereoBuffer.copyFrom(0, 0, buffer, 0, 0, buffer.getNumSamples());
-        stereoBuffer.copyFrom(1, 0, buffer, 0, 0, buffer.getNumSamples());
-        procBuf = &stereoBuffer;
+        float* d = buffer.getWritePointer(ch);
+        for (int i = 0; i < totalSamples; ++i)
+            if (!std::isfinite(d[i]))
+                d[i] = 0.0f;
     }
 
-    auto& params = apvts;
+    // Recording arm is block-synchronous; the recorder enqueues internally
+    // without touching files from this thread.
+    bool recordOn = false;
+    if (auto* p = apvts.getRawParameterValue("recordEnable"))
+        recordOn = p->load() > 0.5f;
+    recorder.setRecordEnabled(recordOn);
 
-    // 1. DC Offset
-    if (auto* p = params.getRawParameterValue("dcOffsetBypass"))
-        if (!p->load()) dcOffset.process(*procBuf);
+    const bool wasMono = buffer.getNumChannels() == 1;
+    const float* const* recChannels = nullptr;
 
-    // 2. Phase
-    bool invL = false, invR = false;
-    float phaseDeg = 0.0f;
-    if (auto* p = params.getRawParameterValue("phaseInvertL")) invL = p->load() > 0.5f;
-    if (auto* p = params.getRawParameterValue("phaseInvertR")) invR = p->load() > 0.5f;
-    if (auto* p = params.getRawParameterValue("phaseOffset"))  phaseDeg = p->load();
-    phaseProc.setInvert(invL, invR);
-    phaseProc.setPhaseOffset(phaseDeg);
-    phaseProc.process(*procBuf);
-
-    // 3. Gain
-    if (auto* p = params.getRawParameterValue("gain"))
+    // The chain always runs on the preallocated stereo scratch, in chunks if
+    // the host block exceeds its capacity - no allocation on this thread.
+    int offset = 0;
+    while (offset < totalSamples)
     {
-        gainStage.setGain(p->load());
-        gainStage.process(*procBuf);
-    }
+        const int n = juce::jmin(totalSamples - offset, stereoScratch.getNumSamples());
 
-    // 4. MS Encode/Decode
-    if (auto* p = params.getRawParameterValue("msMode"))
-    {
-        msProc.setMode(static_cast<int>(p->load()));
-        msProc.process(*procBuf);
-    }
-
-    // 5-7. Channel processing
-    if (auto* p = params.getRawParameterValue("monoMode"))
-    {
-        channelProc.setMonoMode(static_cast<int>(p->load()));
-        channelProc.process(*procBuf);
-    }
-    if (auto* p = params.getRawParameterValue("stereoSeparation"))
-        channelProc.setSeparation(p->load());
-    if (auto* p = params.getRawParameterValue("monoToStereo"))
-    {
-        channelProc.setMonoToStereo(static_cast<int>(p->load()));
-        channelProc.processPostSeparation(*procBuf);
-    }
-
-    // 8. Channel swap
-    if (auto* p = params.getRawParameterValue("channelSwap"))
-        if (p->load() > 0.5f) channelProc.swap(*procBuf);
-
-    // 9. Pan
-    if (auto* p = params.getRawParameterValue("pan"))
-    {
-        panner.setPan(p->load());
-        panner.process(*procBuf);
-    }
-
-    // 10. Output stage
-    float outLGain = 0.0f, outRGain = 0.0f;
-    bool muteL = false, muteR = false, soloL = false, soloR = false;
-    if (auto* p = params.getRawParameterValue("outputLGain")) outLGain = p->load();
-    if (auto* p = params.getRawParameterValue("outputRGain")) outRGain = p->load();
-    if (auto* p = params.getRawParameterValue("outputLMute")) muteL = p->load() > 0.5f;
-    if (auto* p = params.getRawParameterValue("outputRMute")) muteR = p->load() > 0.5f;
-    if (auto* p = params.getRawParameterValue("outputLSolo")) soloL = p->load() > 0.5f;
-    if (auto* p = params.getRawParameterValue("outputRSolo")) soloR = p->load() > 0.5f;
-    gainStage.setOutputStage(outLGain, outRGain, muteL, muteR, soloL, soloR);
-    gainStage.processOutputStage(*procBuf);
-
-    // Metering (always process)
-    metering.process(*procBuf);
-    phaseMeter.process(*procBuf);
-    oscilloscope.process(*procBuf);
-    lufsMeter.process(*procBuf);
-
-    // Recover mono output: copy processed L channel back to mono buffer
-    if (wasMono)
-        buffer.copyFrom(0, 0, *procBuf, 0, 0, buffer.getNumSamples());
-
-    // Write metering values to parameters (with null checks)
-    if (auto* p = params.getRawParameterValue("meterLPeak"))       p->store(metering.getLPeak());
-    if (auto* p = params.getRawParameterValue("meterRPeak"))       p->store(metering.getRPeak());
-    if (auto* p = params.getRawParameterValue("meterLRMS"))        p->store(metering.getLRMS());
-    if (auto* p = params.getRawParameterValue("meterRRMS"))        p->store(metering.getRRMS());
-    if (auto* p = params.getRawParameterValue("phaseCorrelation")) p->store(phaseMeter.getCorrelation());
-    if (auto* p = params.getRawParameterValue("lufsMomentary"))    p->store(lufsMeter.getMomentary());
-    if (auto* p = params.getRawParameterValue("lufsShortTerm"))    p->store(lufsMeter.getShortTerm());
-    if (auto* p = params.getRawParameterValue("lufsIntegrated"))   p->store(lufsMeter.getIntegrated());
-
-    // Recording
-    if (auto* p = params.getRawParameterValue("recordEnable"))
-    {
-        if (p->load() > 0.5f && recordPath.isNotEmpty())
+        if (wasMono)
         {
-            recorder.setPath(juce::File(recordPath));
-            recorder.startRecording();
-            recorder.process(*procBuf);
+            stereoScratch.copyFrom(0, 0, buffer, 0, offset, n);
+            stereoScratch.copyFrom(1, 0, buffer, 0, offset, n);
         }
         else
         {
-            recorder.stopRecording();
+            stereoScratch.copyFrom(0, 0, buffer, 0, offset, n);
+            stereoScratch.copyFrom(1, 0, buffer, 1, offset, n);
         }
+
+        processStereoChunk(stereoScratch, n);
+
+        if (wasMono)
+            buffer.copyFrom(0, offset, stereoScratch, 0, 0, n);
+        else
+        {
+            buffer.copyFrom(0, offset, stereoScratch, 0, 0, n);
+            buffer.copyFrom(1, offset, stereoScratch, 1, 0, n);
+        }
+
+        if (recorder.isActive() && recChannels == nullptr)
+            recChannels = stereoScratch.getArrayOfReadPointers();
+
+        if (recChannels != nullptr)
+            recorder.process(recChannels, n);
+
+        offset += n;
     }
+}
+
+void UTTProcessor::resetSmoothedValues()
+{
+    auto read = [this](const char* id, float fallback) {
+        auto* p = apvts.getRawParameterValue(id);
+        return p != nullptr ? p->load() : fallback;
+    };
+    auto readBool = [this](const char* id, bool fallback) {
+        auto* p = apvts.getRawParameterValue(id);
+        return p != nullptr ? (p->load() > 0.5f) : fallback;
+    };
+
+    gainStage.setGainImmediate(read("gain", 0.0f));
+    gainStage.setOutputStageImmediate(read("outputLGain", 0.0f), read("outputRGain", 0.0f),
+                                      readBool("outputLMute", false), readBool("outputRMute", false),
+                                      readBool("outputLSolo", false), readBool("outputRSolo", false));
+    panner.setPanImmediate(read("pan", 0.0f));
+    channelProc.setSeparationImmediate(read("stereoSeparation", 100.0f));
 }
 
 juce::AudioProcessorEditor* UTTProcessor::createEditor()
@@ -200,6 +249,7 @@ void UTTProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.setProperty("recordPath", recordPath, nullptr);
     state.setProperty("customThemePath", customThemePath, nullptr);
+    state.setProperty("uiTheme", uiTheme, nullptr);
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
@@ -208,16 +258,30 @@ void UTTProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     UTT_TRACE();
     std::unique_ptr<juce::XmlElement> xml(getXmlFromBinary(data, sizeInBytes));
-    if (xml && xml->hasTagName(apvts.state.getType()))
+    if (xml == nullptr)
+        return;
+
+    auto tree = juce::ValueTree::fromXml(*xml);
+    if (tree.hasType(apvts.state.getType()))
     {
-        apvts.replaceState(juce::ValueTree::fromXml(*xml));
+        // Legacy v0.2 states containing meter*/themeIndex parameters are
+        // tolerated: replaceState silently ignores IDs missing from the
+        // current layout, and every surviving DSP parameter keeps its ID.
+        apvts.replaceState(tree);
     }
-    if (xml)
-    {
-        auto state = juce::ValueTree::fromXml(*xml);
-        recordPath = state.getProperty("recordPath", "");
-        customThemePath = state.getProperty("customThemePath", "");
-    }
+
+    recordPath = tree.getProperty("recordPath", "");
+    customThemePath = tree.getProperty("customThemePath", "");
+    uiTheme = tree.getProperty("uiTheme", 0);
+
+    recorder.setPath(recordPath);
+    resetSmoothedValues();
+}
+
+void UTTProcessor::setRecordPath(const juce::String& path)
+{
+    recordPath = path;
+    recorder.setPath(path);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

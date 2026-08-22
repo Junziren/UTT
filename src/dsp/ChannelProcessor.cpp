@@ -2,22 +2,34 @@
 
 namespace UTT {
 
-void ChannelProcessor::prepare(double, int) {}
+void ChannelProcessor::prepare(double sr, int)
+{
+    separationSm.reset(sr, 0.01);
+    separationSm.setCurrentAndTargetValue(separation);
+}
+
 void ChannelProcessor::reset()
 {
-    monoMode = 0;
-    separation = 1.0f;
-    m2sMode = 0;
+    separationSm.setCurrentAndTargetValue(1.0f);
 }
 
 void ChannelProcessor::setMonoMode(int mode) { monoMode = mode; }
-void ChannelProcessor::setSeparation(float percent) { separation = percent / 100.0f; }
+void ChannelProcessor::setSeparation(float percent)
+{
+    separation = juce::jlimit(0.0f, 1.0f, percent / 100.0f);
+    separationSm.setTargetValue(separation);
+}
+void ChannelProcessor::setSeparationImmediate(float percent)
+{
+    separation = juce::jlimit(0.0f, 1.0f, percent / 100.0f);
+    separationSm.setCurrentAndTargetValue(separation);
+}
 void ChannelProcessor::setMonoToStereo(int mode) { m2sMode = mode; }
 
 void ChannelProcessor::process(juce::AudioBuffer<float>& buffer)
 {
-    // Mono mode: modify L/R contents directly
-    if (monoMode == 0) return;
+    if (monoMode == 0)
+        return;
 
     auto* L = buffer.getWritePointer(0);
     auto* R = buffer.getWritePointer(1);
@@ -48,45 +60,36 @@ void ChannelProcessor::process(juce::AudioBuffer<float>& buffer)
             L[i] = R[i] = side;
         }
         break;
-    }
 
-    // Apply stereo separation (adjust mid/side balance)
-    if (separation < 0.999f && monoMode == 0)
-    {
-        for (int i = 0; i < n; ++i)
-        {
-            float mid = (L[i] + R[i]) * 0.5f;
-            float side = (L[i] - R[i]) * 0.5f * separation;
-            L[i] = mid + side;
-            R[i] = mid - side;
-        }
+    default:
+        break;
     }
 }
 
 void ChannelProcessor::processPostSeparation(juce::AudioBuffer<float>& buffer)
 {
-    // Apply stereo separation even when monoMode was not 0
-    if (separation < 0.999f && monoMode != 0)
-    {
-        auto* L = buffer.getWritePointer(0);
-        auto* R = buffer.getWritePointer(1);
-        const int n = buffer.getNumSamples();
+    auto* L = buffer.getWritePointer(0);
+    auto* R = buffer.getWritePointer(1);
+    const int n = buffer.getNumSamples();
 
+    // Stereo separation: M/S rebalance, side scaled by the separation amount.
+    // After any mono mode L == R, so the side signal is already zero and this
+    // is a mathematical no-op there; it narrows true stereo material only.
+    if (separation < 0.9995f || separationSm.isSmoothing())
+    {
         for (int i = 0; i < n; ++i)
         {
+            const float sep = separationSm.getNextValue();
             float mid = (L[i] + R[i]) * 0.5f;
-            float side = (L[i] - R[i]) * 0.5f * separation;
+            float side = (L[i] - R[i]) * 0.5f * sep;
             L[i] = mid + side;
             R[i] = mid - side;
         }
     }
 
     // Mono to Stereo copy
-    if (m2sMode == 0) return;
-
-    auto* L = buffer.getWritePointer(0);
-    auto* R = buffer.getWritePointer(1);
-    const int n = buffer.getNumSamples();
+    if (m2sMode == 0)
+        return;
 
     if (m2sMode == 1) // L -> Both
     {

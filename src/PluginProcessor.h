@@ -38,10 +38,13 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
 
-    void setRecordPath(const juce::String& path) { recordPath = path; recorder.setPath(juce::File(path)); }
+    void setRecordPath(const juce::String& path);   // message thread
     juce::String getRecordPath() const { return recordPath; }
     void setCustomThemePath(const juce::String& path) { customThemePath = path; }
     juce::String getCustomThemePath() const { return customThemePath; }
+
+    int  getUiTheme() const { return uiTheme; }
+    void setUiTheme(int index) { uiTheme = index; }
 
     // DSP accessors for GUI
     const UTT::Metering&       getMetering() const       { return metering; }
@@ -53,8 +56,13 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
-    juce::String recordPath;
-    juce::String customThemePath;
+    void processStereoChunk(juce::AudioBuffer<float>& buffer, int numSamples);
+    void readChainParameters();
+    void resetSmoothedValues();
+
+    juce::String recordPath;      // message thread only
+    juce::String customThemePath; // message thread only
+    int uiTheme = 0;              // message thread only, saved as a state property
 
     UTT::DCOffset           dcOffset;
     UTT::PhaseProcessor     phaseProc;
@@ -67,6 +75,12 @@ private:
     UTT::Oscilloscope       oscilloscope;
     UTT::LUFSMeter          lufsMeter;
     UTT::AudioRecorder      recorder;
+
+    // Preallocated stereo scratch for mono-input duplication and oversized
+    // host blocks; processBlock runs the chain over fixed-size chunks of it.
+    juce::AudioBuffer<float> stereoScratch;
+
+    bool doSwapCurrent = false;
 
     JUCE_DECLARE_NON_COPYABLE(UTTProcessor)
 };

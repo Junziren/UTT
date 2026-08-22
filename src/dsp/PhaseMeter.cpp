@@ -2,9 +2,10 @@
 
 namespace UTT {
 
-void PhaseMeter::prepare(double, int)
+void PhaseMeter::prepare(double sr, int)
 {
-    smoothAlpha = std::exp(-1.0f / (44100.0f * 0.5f));
+    // ~500 ms smoothing, sample-rate compensated
+    smoothAlpha = std::exp(-1.0f / (static_cast<float>(sr) * 0.5f));
 }
 
 void PhaseMeter::reset()

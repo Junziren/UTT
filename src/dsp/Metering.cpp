@@ -2,11 +2,10 @@
 
 namespace UTT {
 
-void Metering::prepare(double, int blockSize)
+void Metering::prepare(double sr, int)
 {
-    // RMS smoothing: ~300ms time constant at 44.1kHz
-    rmsAlpha = std::exp(-1.0f / (44100.0f * 0.3f));
-    // Adjust alpha per sample rate later
+    // RMS smoothing: ~300 ms time constant, sample-rate compensated
+    rmsAlpha = std::exp(-1.0f / (static_cast<float>(sr) * 0.3f));
 }
 
 void Metering::reset()
