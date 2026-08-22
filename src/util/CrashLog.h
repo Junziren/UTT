@@ -18,6 +18,26 @@
 
 namespace UTT {
 
+// Sandbox-safe log location: per-user application support, never the
+// desktop (AUv3 extensions cannot write there, and desktop litter is
+// not acceptable for a released plugin).
+inline std::string crashLogPath(const char* fileName)
+{
+    auto dir = juce::File::getSpecialLocation(
+#ifdef JUCE_IOS
+        juce::File::userApplicationDataDirectory // app container
+#else
+        juce::File::userApplicationDataDirectory
+#endif
+    );
+   #if JUCE_MAC || JUCE_IOS
+    dir = dir.getChildFile("Application Support");
+   #endif
+    auto target = dir.getChildFile("UnpureBloom").getChildFile("UTT");
+    target.createDirectory();
+    return target.getChildFile(fileName).getFullPathName().toStdString();
+}
+
 // -- crash handler --------------------------------------------------
 #ifdef _WIN32
 inline void installCrashHandler()
@@ -29,10 +49,7 @@ inline void installCrashHandler()
     ::AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS* ex) -> LONG {
         DWORD code = ex->ExceptionRecord->ExceptionCode;
         if (code == 0xE06D7363) return EXCEPTION_CONTINUE_SEARCH;
-        auto f = std::ofstream(
-            juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-                .getChildFile("utt_crash_log.txt").getFullPathName().toStdString(),
-            std::ios::app);
+        auto f = std::ofstream(crashLogPath("utt_crash_log.txt"), std::ios::app);
         if (f.is_open())
             f << "CRASH: code=0x" << std::hex << code
               << " addr=" << ex->ExceptionRecord->ExceptionAddress << std::endl;
@@ -42,10 +59,7 @@ inline void installCrashHandler()
 #else
 inline void crashSignalHandler(int sig)
 {
-    auto f = std::ofstream(
-        juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-            .getChildFile("utt_crash_log.txt").getFullPathName().toStdString(),
-        std::ios::app);
+    auto f = std::ofstream(crashLogPath("utt_crash_log.txt"), std::ios::app);
     if (f.is_open()) {
         f << "CRASH: signal=" << sig << "\n";
         void* stack[32];
@@ -75,10 +89,7 @@ inline void debugTrace(const char* msg)
 {
     static std::mutex mtx;
     std::lock_guard<std::mutex> lock(mtx);
-    auto f = std::ofstream(
-        juce::File::getSpecialLocation(juce::File::userDesktopDirectory)
-            .getChildFile("utt_trace.log").getFullPathName().toStdString(),
-        std::ios::app);
+    auto f = std::ofstream(crashLogPath("utt_trace.log"), std::ios::app);
     if (f.is_open())
         f << "[" << std::this_thread::get_id() << "] " << msg << std::endl;
 }

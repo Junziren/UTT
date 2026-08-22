@@ -37,18 +37,33 @@ set(UTT_SOURCES
     src/gui/FallbackPanel.cpp
 )
 
+# Format matrix:
+#   Windows/Linux (this repo's first-class lane): VST3 + Standalone harness
+#   macOS:  VST3 + AU + AUv3 (AUv3 builds as an .appex; UNVERIFIED on this
+#           machine - requires Xcode, see docs/APPLE_LANE.md)
+#   iOS:    configure with -DCMAKE_SYSTEM_NAME=iOS for AUv3 + Standalone
+#           inside a container app target (UNVERIFIED, see docs/APPLE_LANE.md)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(UTT_FORMATS AUv3 Standalone)
+elseif(APPLE)
+    set(UTT_FORMATS VST3 AU AUv3)
+else()
+    set(UTT_FORMATS VST3 Standalone)
+    set(UTT_NEEDS_WEBVIEW2 NEEDS_WEBVIEW2 TRUE)
+endif()
+
 juce_add_plugin(UTT
     COMPANY_NAME "UnpureBloom"
     PLUGIN_MANUFACTURER_CODE UT01
     PLUGIN_CODE UT02
-    FORMATS VST3 Standalone
+    FORMATS ${UTT_FORMATS}
+    ${UTT_NEEDS_WEBVIEW2}
     PRODUCT_NAME "UTT"
     VERSION "0.3.0"
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
-    NEEDS_WEBVIEW2 TRUE
     COPY_PLUGIN_AFTER_BUILD TRUE
     PLUGIN_MANUFACTURER "UnpureBloom"
     PLUGIN_DESCRIPTION "UTT - Utility Toolbox by UnpureBloom"

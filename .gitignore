@@ -1,0 +1,24 @@
+# Build outputs
+build/
+build-*/
+cmake-build-*/
+
+# Validation / test output (regenerable)
+tests/results/UTT.vst3_*.txt
+pluginval*.txt
+pv*.txt
+
+# Runtime artifacts
+UTT Recordings/
+utt_trace.log
+utt_crash_log.txt
+*.dmp
+
+# Archives / backups
+*.zip
+*.bak
+theme_fix.patch
+
+# Local tooling
+.zcode/
+.DS_Store

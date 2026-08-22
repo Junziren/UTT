@@ -3,10 +3,10 @@
     <HEADER
         name="UTT"
         pluginIdentifier="UTT"
-        manufacturer="UTT Tools"
-        version="0.1.0"
+        manufacturer="UnpureBloom"
+        version="0.3.0"
         testAllCombinations="false"
-        strictnessLevel="5"/>
+        strictnessLevel="10"/>
 
     <PLUGINS>
         <PLUGIN path="C:/Program Files/Common Files/VST3/UTT.vst3"/>
