@@ -44,7 +44,7 @@ public:
                        .getChildFile("UTT Recordings");
         dir.createDirectory();
         auto ts = juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
-        return dir.getChildFile("UTT_" + ts + ".wav");
+        return dir.getNonexistentChildFile("UTT_" + ts, ".wav", false);
     }
 
 private:
@@ -80,6 +80,7 @@ private:
 
     mutable juce::CriticalSection pathLock;  // message <-> writer, never audio
     juce::String pathString;
+    bool pathIsAutomatic = false;            // guarded by pathLock
 
     // --- writer-thread-only file state ---
     // NOTE: AudioFormatWriter deletes the OutputStream it was created with,

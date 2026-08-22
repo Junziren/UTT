@@ -522,6 +522,47 @@ public:
 
             tmp.deleteFile();
         }
+
+        beginTest("starts immediately with a unique automatic WAV path");
+        {
+            const double sr = 48000.0;
+            const int blockLen = 128;
+            UTT::AudioRecorder rec;
+            rec.prepare(sr, blockLen);
+
+            rec.setRecordEnabled(true);
+            for (int spin = 0; spin < 400 && !rec.isActive(); ++spin)
+                juce::Thread::sleep(5);
+
+            expect(rec.isActive(), "REC must create a default file without BROWSE");
+            const juce::File firstTake(rec.getPath());
+            expect(firstTake.getFullPathName().isNotEmpty(), "automatic take has a path");
+            expect(firstTake.hasFileExtension(".wav"), "automatic take is a WAV file");
+
+            auto block = makeBuffer(2, blockLen);
+            rec.process(block.getArrayOfReadPointers(), blockLen);
+            rec.setRecordEnabled(false);
+            for (int spin = 0; spin < 400 && rec.isActive(); ++spin)
+                juce::Thread::sleep(5);
+
+            expect(!rec.isActive(), "automatic take finalises when REC turns off");
+            expect(firstTake.existsAsFile(), "automatic take is written to disk");
+
+            rec.setRecordEnabled(true);
+            for (int spin = 0; spin < 400 && !rec.isActive(); ++spin)
+                juce::Thread::sleep(5);
+
+            const juce::File secondTake(rec.getPath());
+            expect(rec.isActive(), "a later REC action opens another automatic take");
+            expect(firstTake != secondTake, "automatic takes do not overwrite one another");
+
+            rec.setRecordEnabled(false);
+            for (int spin = 0; spin < 400 && rec.isActive(); ++spin)
+                juce::Thread::sleep(5);
+
+            firstTake.deleteFile();
+            secondTake.deleteFile();
+        }
     }
 };
 
@@ -921,11 +962,26 @@ public:
                     && css.contains (".hero.gesture-active")
                     && css.contains ("prefers-reduced-motion: reduce"),
                 "local control feedback must be bounded and respect reduced motion");
+        expect (html.contains ("id=\"heroTemporal\"")
+                    && html.contains ("id=\"heroTitle\"")
+                    && script.contains ("triggerHeroTemporalEffect")
+                    && script.contains ("drawHeroTemporal")
+                    && script.contains ("clearHeroTemporalEffect")
+                    && script.contains ("1000 / 24")
+                    && css.contains ("hero-title-slice-a"),
+                "Hero text folds must use one capped, finite canvas effect");
         expect (css.contains ("grid-template-rows: 38px 92px minmax(0, 1fr) 58px 22px"),
                 "the default surface must retain its compact fixed chrome layout");
         expect (html.contains ("openFAD / UTT") && html.contains ("openFAD AUDIO TOOLS")
                     && html.contains ("<dd>openFAD</dd>"),
                 "About must identify the openFAD product family");
+        expect (html.contains ("SIGNAL PATH") && html.contains ("RECORDING")
+                    && html.contains ("MEASUREMENT") && html.contains ("AUDIO I/O")
+                    && html.contains ("PROJECT") && html.contains ("LICENSE")
+                    && html.contains ("id=\"aboutBuild\"")
+                    && script.contains ("event.key !== \"Tab\"")
+                    && host.contains ("\"uiBuild\", UTT_UI_BUILD_ID"),
+                "About must expose product detail, build identity and keyboard containment");
         if (parameters != nullptr)
             for (const auto& parameter : *parameters)
             {

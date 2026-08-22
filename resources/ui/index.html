@@ -13,7 +13,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true"></span>
-        <button class="wordmark" id="aboutOpen" type="button" aria-haspopup="dialog">UTT</button>
+        <button class="wordmark" id="aboutOpen" type="button" aria-haspopup="dialog" aria-controls="aboutLayer" aria-expanded="false">UTT</button>
       </div>
       <span class="top-route">UTILITY TOOLBOX</span>
       <span class="top-state mono" id="topState">WAITING FOR NATIVE SURFACE</span>
@@ -23,9 +23,10 @@
     </header>
 
     <section class="hero" aria-label="UTT status">
+      <canvas class="hero-temporal" id="heroTemporal" aria-hidden="true"></canvas>
       <div class="hero-copy">
         <span class="section-index mono">00 / UTILITY</span>
-        <h1>UTILITY</h1>
+        <h1 id="heroTitle" data-temporal-text="UTILITY">UTILITY</h1>
         <span class="hero-cue mono" id="heroCue">STEREO PROCESSING</span>
       </div>
       <div class="hero-field" id="heroField" aria-hidden="true">
@@ -36,7 +37,7 @@
       </div>
       <div class="hero-readout">
         <div class="hero-value-wrap">
-          <span class="hero-value" id="heroValue">--</span>
+          <span class="hero-value" id="heroValue" data-temporal-text="--">--</span>
           <span class="hero-unit mono" id="heroUnit">GAIN</span>
         </div>
         <div class="hero-meters" aria-label="Output peak meters">
@@ -97,7 +98,7 @@
       <div class="record-title"><span class="zone-number mono">05</span><h2 id="recordTitle">RECORD</h2></div>
       <div class="record-control" id="recordControls"></div>
       <button class="command-button" id="recordBrowse" type="button">BROWSE</button>
-      <output class="record-path mono" id="recordPath">NO FILE SELECTED</output>
+      <output class="record-path mono" id="recordPath">AUTO FILE ON REC</output>
       <span class="record-state mono" id="recordState">STANDBY</span>
     </section>
 
@@ -112,16 +113,63 @@
     <section class="about-dialog" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
       <div class="about-head"><span class="mono">openFAD / UTT</span><button class="icon-button" id="aboutClose" type="button" aria-label="Close about panel">X</button></div>
       <div class="about-body">
-        <span class="about-mark" aria-hidden="true"></span>
-        <span class="about-brand mono">openFAD AUDIO TOOLS</span>
-        <h2 id="aboutTitle">UTT</h2>
-        <p>UTILITY TOOLBOX</p>
-        <dl>
+        <header class="about-identity">
+          <span class="about-mark" aria-hidden="true"></span>
+          <div class="about-title-block">
+            <span class="about-brand mono">openFAD AUDIO TOOLS</span>
+            <h2 id="aboutTitle">UTT</h2>
+            <p class="about-sub mono">UTILITY TOOLBOX / STEREO UTILITY PROCESSOR</p>
+          </div>
+          <span class="about-stamp mono" id="aboutVersion">v0.3.0</span>
+        </header>
+
+        <p class="about-summary">UTT is a compact native-host utility processor for corrective stereo work: inspect, re-route, balance and document the final output without changing the parameter contract beneath a session.</p>
+
+        <div class="about-grid">
+          <section class="about-cell">
+            <h3 class="mono">SIGNAL PATH</h3>
+            <p>DC BLOCK -> PHASE -> GAIN -> M/S -> MONO / WIDTH -> SWAP -> PAN -> OUTPUT. Metering, scope and LUFS read the completed chain.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">MEASUREMENT</h3>
+            <p>Post-chain L/R peak and RMS, correlation, a real stereo scope and BS.1770-4 / EBU R128 Momentary, Short-term and Integrated LUFS.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">RECORDING</h3>
+            <p>REC captures post-chain stereo as 24-bit WAV. With no custom path, it immediately creates a new take in Music / UTT Recordings.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">CONTROL</h3>
+            <p>Knobs support drag, wheel, Shift fine control, double-click reset and keyboard steps. Parameter right-click stays in the native host menu.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">AUDIO I/O</h3>
+            <p>Mono or stereo input is processed through the same stereo chain. The plugin exposes stereo and mono-compatible output layouts.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">SURFACE</h3>
+            <p>Offline embedded WebView UI with real native meter and scope frames. Preview mode never invents activity or telemetry.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">PROJECT</h3>
+            <p>Part of the openFAD family of Chinese-first open-source music visual tools from FAD Records; UTT is developed by UnpureBloom.</p>
+          </section>
+          <section class="about-cell">
+            <h3 class="mono">LICENSE</h3>
+            <p>UTT is published by UnpureBloom under GNU GPL v3.0 or later. It uses JUCE under its applicable GPL or commercial route.</p>
+          </section>
+        </div>
+
+        <dl class="about-specs">
           <div><dt>FAMILY</dt><dd>openFAD</dd></div>
-          <div><dt>FORMAT</dt><dd>VST3 / AUv3 PREP</dd></div>
           <div><dt>ENGINE</dt><dd id="aboutEngine">--</dd></div>
-          <div><dt>VERSION</dt><dd id="aboutVersion">v0.3.0</dd></div>
+          <div><dt>UI BUILD</dt><dd id="aboutBuild">STATIC PREVIEW</dd></div>
+          <div><dt>REC TARGET</dt><dd id="aboutRecord">AUTO / MUSIC\UTT RECORDINGS</dd></div>
+          <div><dt>TARGETS</dt><dd>WINDOWS / VST3 + STANDALONE</dd></div>
+          <div><dt>CONTRACT</dt><dd>18 HOST PARAMETERS</dd></div>
         </dl>
+
+        <footer class="about-foot mono"><span>OPENFAD / UTT / UNPUREBLOOM / GPL V3+</span><span>ESC / CLOSE</span></footer>
       </div>
     </section>
   </div>

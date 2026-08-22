@@ -11,7 +11,15 @@
   let scopeAnimationFrame = null;
   let surfaceActive = true;
   let lastAboutInvoker = null;
+  let aboutOpen = false;
+  let aboutCloseTimer = null;
   let heroFeedbackTimer = null;
+  let heroTemporalCanvas = null;
+  let heroTemporalContext = null;
+  let heroTemporalFrame = null;
+  let heroTemporalEffect = null;
+  const heroTemporalSource = document.createElement("canvas");
+  const heroTemporalSourceContext = heroTemporalSource.getContext("2d", { alpha: true });
   const feedbackNodes = new Set();
 
   const inputRows = [
@@ -144,7 +152,7 @@
     recordEnable: {
       title: "RECORD / 后台录音",
       route: "POST-CHAIN STEREO -> 24-BIT WAV",
-      copy: "录制处理完成后的立体声输出。先用 BROWSE 选择文件；REC 只负责启停，写入在后台线程进行，DROP 显示未写入的数据块数。",
+      copy: "录制处理完成后的立体声输出。REC 是一步式：未选择自定义文件时，打开后会立即在 Music/UTT Recordings 新建 24-bit WAV。BROWSE 仅用于改用指定路径；写入在后台线程进行，DROP 显示未写入的数据块数。",
     },
   });
 
@@ -227,12 +235,188 @@
     return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
+  function temporalNoise(seed) {
+    const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+    return value - Math.floor(value);
+  }
+
+  function initialiseHeroTemporal() {
+    heroTemporalCanvas = document.getElementById("heroTemporal");
+    heroTemporalContext = heroTemporalCanvas?.getContext("2d", { alpha: true }) || null;
+  }
+
+  function clearHeroTemporalEffect() {
+    if (heroTemporalFrame !== null) {
+      window.cancelAnimationFrame(heroTemporalFrame);
+      heroTemporalFrame = null;
+    }
+    heroTemporalEffect = null;
+    if (heroTemporalCanvas && heroTemporalContext)
+      heroTemporalContext.clearRect(0, 0, heroTemporalCanvas.width, heroTemporalCanvas.height);
+    document.querySelector(".hero")?.classList.remove("temporal-active");
+  }
+
+  function resizeHeroTemporalCanvas() {
+    const hero = document.querySelector(".hero");
+    if (!hero || !heroTemporalCanvas || !heroTemporalContext) return null;
+
+    const width = Math.max(1, Math.round(hero.clientWidth));
+    const height = Math.max(1, Math.round(hero.clientHeight));
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+    if (heroTemporalCanvas.width !== pixelWidth || heroTemporalCanvas.height !== pixelHeight) {
+      heroTemporalCanvas.width = pixelWidth;
+      heroTemporalCanvas.height = pixelHeight;
+    }
+    heroTemporalContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { hero, rect: hero.getBoundingClientRect(), width, height, dpr };
+  }
+
+  function captureHeroTemporalSource(effect) {
+    const node = document.getElementById("heroValue");
+    if (!node || !effect || !heroTemporalSourceContext) return;
+
+    const style = window.getComputedStyle(node);
+    const fontSize = Math.max(1, Math.round(parseFloat(style.fontSize) || 50));
+    const padding = 12;
+    const sourceWidth = Math.max(1, Math.ceil(effect.target.width + padding * 2));
+    const sourceHeight = Math.max(1, Math.ceil(fontSize * 1.28 + padding * 2));
+    heroTemporalSource.width = Math.round(sourceWidth * effect.dpr);
+    heroTemporalSource.height = Math.round(sourceHeight * effect.dpr);
+    heroTemporalSourceContext.setTransform(effect.dpr, 0, 0, effect.dpr, 0, 0);
+    heroTemporalSourceContext.clearRect(0, 0, sourceWidth, sourceHeight);
+    heroTemporalSourceContext.save();
+    heroTemporalSourceContext.beginPath();
+    heroTemporalSourceContext.rect(padding, 0, effect.target.width, sourceHeight);
+    heroTemporalSourceContext.clip();
+    heroTemporalSourceContext.fillStyle = "#0a0a0a";
+    heroTemporalSourceContext.font = `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
+    heroTemporalSourceContext.textAlign = "left";
+    heroTemporalSourceContext.textBaseline = "middle";
+    heroTemporalSourceContext.fillText(node.textContent || "--", padding, sourceHeight * .52);
+    heroTemporalSourceContext.restore();
+
+    effect.sourceWidth = sourceWidth;
+    effect.sourceHeight = sourceHeight;
+    effect.sourceX = effect.target.x - padding;
+    effect.sourceY = effect.target.y + effect.target.height * .5 - sourceHeight * .5;
+  }
+
+  function drawHeroTemporal(now) {
+    heroTemporalFrame = null;
+    const effect = heroTemporalEffect;
+    if (!effect || !heroTemporalContext || !heroTemporalCanvas
+      || !surfaceActive || aboutOpen || document.hidden || reducedMotion()) {
+      clearHeroTemporalEffect();
+      return;
+    }
+
+    const progress = clamp((now - effect.started) / effect.duration);
+    if (effect.lastFrame && now - effect.lastFrame < 1000 / 24 && progress < 1) {
+      heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
+      return;
+    }
+    effect.lastFrame = now;
+
+    const fade = Math.pow(1 - progress, 1.35);
+    const context = heroTemporalContext;
+    context.clearRect(0, 0, effect.width, effect.height);
+
+    const stripeCount = 11;
+    const stripeHeight = effect.sourceHeight / stripeCount;
+    const origin = clamp((effect.originX - effect.target.x) / Math.max(1, effect.target.width));
+    for (let index = 0; index < stripeCount; index += 1) {
+      const stripeCenter = (index + .5) / stripeCount;
+      const proximity = 1 - Math.min(1, Math.abs(stripeCenter - origin) * 1.5);
+      const fold = (temporalNoise(effect.seed + index * 7.13) - .5) * 18 * fade
+        + (stripeCenter - .5) * 16 * fade;
+      const vertical = (temporalNoise(effect.seed + index * 13.7) - .5) * 3 * fade;
+      context.save();
+      context.beginPath();
+      context.rect(effect.sourceX - 20, effect.sourceY + index * stripeHeight,
+        effect.sourceWidth + 40, stripeHeight + 1);
+      context.clip();
+      context.globalAlpha = (.06 + proximity * .22) * fade;
+      context.drawImage(heroTemporalSource, effect.sourceX + fold, effect.sourceY + vertical,
+        effect.sourceWidth, effect.sourceHeight);
+      context.restore();
+    }
+
+    context.save();
+    context.strokeStyle = "#002fa7";
+    context.fillStyle = "#002fa7";
+    context.lineWidth = 1;
+    for (let index = 0; index < 7; index += 1) {
+      const lane = (index - 3) * 13;
+      const x = clamp(effect.originX + lane * (1 + progress * .35), 0, effect.width);
+      const reach = (18 + temporalNoise(effect.seed + index * 4.7) * 30) * fade;
+      context.globalAlpha = (.15 + (index % 2) * .08) * fade;
+      context.beginPath();
+      context.moveTo(x, effect.target.y - reach);
+      context.lineTo(x + lane * .14, effect.target.y + effect.target.height + reach);
+      context.stroke();
+    }
+    for (let index = 0; index < 24; index += 1) {
+      const x = effect.target.x + temporalNoise(effect.seed + index * 5.19) * effect.target.width;
+      const y = effect.target.y + temporalNoise(effect.seed + index * 8.93) * effect.target.height;
+      const size = index % 5 === 0 ? 2 : 1;
+      context.globalAlpha = (.12 + temporalNoise(effect.seed + index) * .34) * fade;
+      context.fillRect(Math.round(x), Math.round(y), size, size);
+    }
+    context.restore();
+
+    if (progress < 1) {
+      heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
+    } else {
+      context.clearRect(0, 0, effect.width, effect.height);
+      heroTemporalEffect = null;
+      document.querySelector(".hero")?.classList.remove("temporal-active");
+    }
+  }
+
+  function triggerHeroTemporalEffect(originX) {
+    if (!surfaceActive || aboutOpen || document.hidden || reducedMotion()) return;
+    const layout = resizeHeroTemporalCanvas();
+    const node = document.getElementById("heroValue");
+    if (!layout || !node) return;
+
+    const targetBox = node.getBoundingClientRect();
+    if (targetBox.width < 1 || targetBox.height < 1) return;
+    const effect = {
+      started: window.performance.now(),
+      lastFrame: 0,
+      duration: 620,
+      dpr: layout.dpr,
+      width: layout.width,
+      height: layout.height,
+      originX: clamp(originX - layout.rect.left, 0, layout.width),
+      seed: window.performance.now() * .001,
+      target: {
+        x: targetBox.left - layout.rect.left,
+        y: targetBox.top - layout.rect.top,
+        width: targetBox.width,
+        height: targetBox.height,
+      },
+    };
+
+    captureHeroTemporalSource(effect);
+    heroTemporalEffect = effect;
+    const hero = layout.hero;
+    hero.classList.remove("temporal-active");
+    void hero.offsetWidth;
+    hero.classList.add("temporal-active");
+    if (heroTemporalFrame !== null) window.cancelAnimationFrame(heroTemporalFrame);
+    heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
+  }
+
   function clearVisualFeedback() {
     if (heroFeedbackTimer !== null) {
       window.clearTimeout(heroFeedbackTimer);
       heroFeedbackTimer = null;
     }
     document.querySelector(".hero")?.classList.remove("gesture-active");
+    clearHeroTemporalEffect();
     feedbackNodes.forEach((node) => node.classList.remove("feedback"));
     feedbackNodes.clear();
   }
@@ -241,9 +425,9 @@
     if (!surfaceActive || reducedMotion() || !node) return;
     const hero = document.querySelector(".hero");
     const field = document.getElementById("heroField");
+    const sourceBox = node.getBoundingClientRect();
 
     if (hero && field) {
-      const sourceBox = node.getBoundingClientRect();
       const fieldBox = field.getBoundingClientRect();
       const x = clamp(sourceBox.left + sourceBox.width / 2 - fieldBox.left,
         10, Math.max(10, fieldBox.width - 10));
@@ -257,6 +441,8 @@
         heroFeedbackTimer = null;
       }, 440);
     }
+
+    triggerHeroTemporalEffect(sourceBox.left + sourceBox.width * .5);
 
     node.classList.remove("feedback");
     void node.offsetWidth;
@@ -584,7 +770,11 @@
 
   function applyHero(hero) {
     if (!hero) return;
-    document.getElementById("heroValue").textContent = hero.text || "--";
+    const valueNode = document.getElementById("heroValue");
+    const text = hero.text || "--";
+    valueNode.textContent = text;
+    valueNode.dataset.temporalText = text;
+    if (heroTemporalEffect) captureHeroTemporalSource(heroTemporalEffect);
     document.getElementById("heroUnit").textContent = hero.label || "GAIN";
     document.getElementById("heroCue").textContent = hero.id ? `${hero.label || hero.id} / ACTIVE PARAMETER` : "STEREO PROCESSING";
   }
@@ -601,10 +791,11 @@
 
   function applyRecord(record) {
     if (!record) return;
-    const path = record.path || "NO FILE SELECTED";
+    const path = record.path || "AUTO FILE ON REC";
     const pathNode = document.getElementById("recordPath");
     pathNode.textContent = path;
-    pathNode.title = record.path || "";
+    pathNode.title = record.path || "A new WAV will be created automatically when REC starts.";
+    document.getElementById("aboutRecord").textContent = record.path || "AUTO / MUSIC\\UTT RECORDINGS";
     const stateNode = document.getElementById("recordState");
     stateNode.classList.remove("live", "error");
     let label = "STANDBY";
@@ -657,7 +848,7 @@
   }
 
   function scheduleScopeDraw() {
-    if (!surfaceActive || scopeAnimationFrame !== null) return;
+    if (!surfaceActive || aboutOpen || scopeAnimationFrame !== null) return;
     scopeAnimationFrame = window.requestAnimationFrame(() => {
       scopeAnimationFrame = null;
       drawScope();
@@ -730,6 +921,8 @@
         document.getElementById("topVersion").textContent = payload.version;
         document.getElementById("aboutVersion").textContent = payload.version;
       }
+      if (payload && payload.uiBuild)
+        document.getElementById("aboutBuild").textContent = `EMBEDDED / ${payload.uiBuild}`;
       document.getElementById("topState").textContent = "NATIVE SURFACE READY";
       document.getElementById("topMode").textContent = "NATIVE";
       document.getElementById("statusMessage").textContent = "REAL PARAMETER AND METER STATE";
@@ -760,29 +953,64 @@
     const open = document.getElementById("aboutOpen");
     const close = document.getElementById("aboutClose");
     const closeLayer = () => {
-      layer.hidden = true;
-      if (lastAboutInvoker) lastAboutInvoker.focus();
+      if (layer.hidden) return;
+      aboutOpen = false;
+      open.setAttribute("aria-expanded", "false");
+      layer.classList.remove("is-open");
+      const finishClose = () => {
+        if (aboutOpen) return;
+        layer.hidden = true;
+        if (lastAboutInvoker) lastAboutInvoker.focus({ preventScroll: true });
+        scheduleScopeDraw();
+      };
+      window.clearTimeout(aboutCloseTimer);
+      if (reducedMotion()) finishClose();
+      else aboutCloseTimer = window.setTimeout(finishClose, 120);
     };
     open.addEventListener("click", () => {
       hideParameterHelp();
       clearVisualFeedback();
+      endAllGestures();
       lastAboutInvoker = open;
+      aboutOpen = true;
       layer.hidden = false;
-      close.focus();
+      open.setAttribute("aria-expanded", "true");
+      if (scopeAnimationFrame !== null) {
+        window.cancelAnimationFrame(scopeAnimationFrame);
+        scopeAnimationFrame = null;
+      }
+      void layer.offsetWidth;
+      layer.classList.add("is-open");
+      close.focus({ preventScroll: true });
     });
     close.addEventListener("click", closeLayer);
     layer.addEventListener("pointerdown", (event) => {
       if (event.target === layer) closeLayer();
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !layer.hidden) {
+      if (layer.hidden) return;
+      if (event.key === "Escape") {
         event.preventDefault();
         closeLayer();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(layer.querySelectorAll("button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     });
   }
 
   function boot() {
+    initialiseHeroTemporal();
     createParameterHelp();
     buildControls();
     bindAbout();

@@ -57,6 +57,7 @@ void AudioRecorder::setPath(const juce::String& path)
     {
         const juce::ScopedLock lock(pathLock);
         pathString = path;
+        pathIsAutomatic = false;
     }
     pathVersion.fetch_add(1, std::memory_order_release); // writer rolls the take over
 }
@@ -106,12 +107,30 @@ bool AudioRecorder::consumeError()
 bool AudioRecorder::openFile()
 {
     juce::String path;
+    bool needsAutomaticPath = false;
+
     {
         const juce::ScopedLock lock(pathLock);
+        needsAutomaticPath = pathString.isEmpty() || pathIsAutomatic;
+        if (!needsAutomaticPath)
+            path = pathString;
+    }
+
+    if (needsAutomaticPath)
+    {
+        const auto automaticPath = getDefaultPath().getFullPathName();
+        const juce::ScopedLock lock(pathLock);
+
+        // A simultaneous BROWSE action wins over the automatically generated
+        // file. This lock is never acquired from the audio callback.
+        if (pathString.isEmpty() || pathIsAutomatic)
+        {
+            pathString = automaticPath;
+            pathIsAutomatic = true;
+        }
+
         path = pathString;
     }
-    if (path.isEmpty())
-        return false;
 
     const juce::File file(path);
     if (!file.getParentDirectory().createDirectory().wasOk())

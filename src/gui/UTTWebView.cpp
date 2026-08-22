@@ -329,7 +329,7 @@ void UTTWebView::timerCallback()
     const auto on = recorder.isDesired();
     const auto active = recorder.isActive();
     const auto dropped = recorder.getDroppedBlocks();
-    const auto path = processor.getRecordPath();
+    const auto path = recorder.getPath();
 
     if (recordErrorPending || on != lastRecordOn || active != lastRecordActive
         || dropped != lastDroppedSeen || path != lastRecordPath)
@@ -547,6 +547,7 @@ juce::var UTTWebView::buildFullState() const
     root->setProperty ("params", parameters);
     root->setProperty ("hero", buildHeroState());
     root->setProperty ("version", "v0.3.0");
+    root->setProperty ("uiBuild", UTT_UI_BUILD_ID);
 
     auto* engine = new juce::DynamicObject();
     engine->setProperty ("sampleRate", processor.getSampleRate());
@@ -556,7 +557,7 @@ juce::var UTTWebView::buildFullState() const
     auto* record = new juce::DynamicObject();
     record->setProperty ("desired", processor.getRecorder().isDesired());
     record->setProperty ("active", processor.getRecorder().isActive());
-    record->setProperty ("path", processor.getRecordPath());
+    record->setProperty ("path", processor.getRecorder().getPath());
     record->setProperty ("dropped", (juce::int64) processor.getRecorder().getDroppedBlocks());
     record->setProperty ("error", false);
     root->setProperty ("record", juce::var (record));
@@ -712,7 +713,7 @@ void UTTWebView::pushRecordState()
     const auto on = recorder.isDesired();
     const auto active = recorder.isActive();
     const auto dropped = recorder.getDroppedBlocks();
-    const auto path = processor.getRecordPath();
+    const auto path = recorder.getPath();
 
     auto* object = new juce::DynamicObject();
     object->setProperty ("desired", on);
