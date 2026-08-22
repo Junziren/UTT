@@ -968,8 +968,9 @@ public:
                     && script.contains ("drawHeroTemporal")
                     && script.contains ("clearHeroTemporalEffect")
                     && script.contains ("1000 / 24")
-                    && css.contains ("hero-title-slice-a"),
-                "Hero text folds must use one capped, finite canvas effect");
+                    && script.contains ("heroTemporalParticlePool")
+                    && script.contains ("sampleHeroTemporalText"),
+                "Hero text must use a capped, finite Canvas particle effect sampled from the glyphs");
         expect (css.contains ("grid-template-rows: 38px 92px minmax(0, 1fr) 58px 22px"),
                 "the default surface must retain its compact fixed chrome layout");
         expect (html.contains ("openFAD / UTT") && html.contains ("openFAD AUDIO TOOLS")

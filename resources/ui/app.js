@@ -18,8 +18,13 @@
   let heroTemporalContext = null;
   let heroTemporalFrame = null;
   let heroTemporalEffect = null;
+  let heroTemporalParticleCount = 0;
+  const heroTemporalParticlePool = [];
   const heroTemporalSource = document.createElement("canvas");
-  const heroTemporalSourceContext = heroTemporalSource.getContext("2d", { alpha: true });
+  const heroTemporalSourceContext = heroTemporalSource.getContext("2d", {
+    alpha: true,
+    willReadFrequently: true,
+  });
   const feedbackNodes = new Set();
 
   const inputRows = [
@@ -251,6 +256,7 @@
       heroTemporalFrame = null;
     }
     heroTemporalEffect = null;
+    heroTemporalParticleCount = 0;
     if (heroTemporalCanvas && heroTemporalContext)
       heroTemporalContext.clearRect(0, 0, heroTemporalCanvas.width, heroTemporalCanvas.height);
     document.querySelector(".hero")?.classList.remove("temporal-active");
@@ -273,22 +279,48 @@
     return { hero, rect: hero.getBoundingClientRect(), width, height, dpr };
   }
 
-  function captureHeroTemporalSource(effect) {
-    const node = document.getElementById("heroValue");
-    if (!node || !effect || !heroTemporalSourceContext) return;
+  function appendHeroTemporalParticle(effect, targetX, targetY, salt) {
+    const index = heroTemporalParticleCount;
+    const particle = heroTemporalParticlePool[index] || {};
+    const radialX = targetX - effect.originX;
+    const radialY = targetY - effect.originY;
+    const radialLength = Math.max(1, Math.hypot(radialX, radialY));
+    const spread = 9 + temporalNoise(effect.seed + salt * 3.17) * 31;
+    const cross = (temporalNoise(effect.seed + salt * 7.09) - .5) * 18;
+    const directionX = radialX / radialLength;
+    const directionY = radialY / radialLength;
+
+    particle.targetX = targetX;
+    particle.targetY = targetY;
+    particle.driftX = directionX * spread - directionY * cross;
+    particle.driftY = directionY * spread + directionX * cross;
+    particle.phase = temporalNoise(effect.seed + salt * 11.71);
+    particle.delay = temporalNoise(effect.seed + salt * 5.63) * .16;
+    particle.size = temporalNoise(effect.seed + salt * 17.47) > .86 ? 1.8 : 1.05;
+    particle.accent = temporalNoise(effect.seed + salt * 23.81) > .82;
+    particle.brightness = .38 + temporalNoise(effect.seed + salt * 29.23) * .62;
+    heroTemporalParticlePool[index] = particle;
+    heroTemporalParticleCount += 1;
+  }
+
+  function sampleHeroTemporalText(node, layout, effect, limit, salt) {
+    if (!node || !heroTemporalSourceContext || heroTemporalParticleCount >= limit) return;
+
+    const targetBox = node.getBoundingClientRect();
+    if (targetBox.width < 1 || targetBox.height < 1) return;
 
     const style = window.getComputedStyle(node);
-    const fontSize = Math.max(1, Math.round(parseFloat(style.fontSize) || 50));
-    const padding = 12;
-    const sourceWidth = Math.max(1, Math.ceil(effect.target.width + padding * 2));
+    const fontSize = Math.max(1, Math.round(parseFloat(style.fontSize) || 44));
+    const padding = 7;
+    const sourceWidth = Math.max(1, Math.ceil(targetBox.width + padding * 2));
     const sourceHeight = Math.max(1, Math.ceil(fontSize * 1.28 + padding * 2));
-    heroTemporalSource.width = Math.round(sourceWidth * effect.dpr);
-    heroTemporalSource.height = Math.round(sourceHeight * effect.dpr);
-    heroTemporalSourceContext.setTransform(effect.dpr, 0, 0, effect.dpr, 0, 0);
+    heroTemporalSource.width = sourceWidth;
+    heroTemporalSource.height = sourceHeight;
+    heroTemporalSourceContext.setTransform(1, 0, 0, 1, 0, 0);
     heroTemporalSourceContext.clearRect(0, 0, sourceWidth, sourceHeight);
     heroTemporalSourceContext.save();
     heroTemporalSourceContext.beginPath();
-    heroTemporalSourceContext.rect(padding, 0, effect.target.width, sourceHeight);
+    heroTemporalSourceContext.rect(padding, 0, targetBox.width, sourceHeight);
     heroTemporalSourceContext.clip();
     heroTemporalSourceContext.fillStyle = "#0a0a0a";
     heroTemporalSourceContext.font = `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
@@ -297,10 +329,32 @@
     heroTemporalSourceContext.fillText(node.textContent || "--", padding, sourceHeight * .52);
     heroTemporalSourceContext.restore();
 
-    effect.sourceWidth = sourceWidth;
-    effect.sourceHeight = sourceHeight;
-    effect.sourceX = effect.target.x - padding;
-    effect.sourceY = effect.target.y + effect.target.height * .5 - sourceHeight * .5;
+    const pixels = heroTemporalSourceContext.getImageData(0, 0, sourceWidth, sourceHeight).data;
+    const candidates = [];
+    const step = targetBox.width > 160 ? 3 : 2;
+    const sourceX = targetBox.left - layout.rect.left - padding;
+    const sourceY = targetBox.top - layout.rect.top + targetBox.height * .5 - sourceHeight * .5;
+    for (let y = 0; y < sourceHeight; y += step) {
+      for (let x = 0; x < sourceWidth; x += step) {
+        if (pixels[(y * sourceWidth + x) * 4 + 3] >= 100)
+          candidates.push({ x: sourceX + x, y: sourceY + y });
+      }
+    }
+
+    const remaining = Math.max(0, limit - heroTemporalParticleCount);
+    const stride = Math.max(1, Math.ceil(candidates.length / Math.max(1, remaining)));
+    const offset = Math.floor(temporalNoise(effect.seed + salt) * stride);
+    for (let index = offset; index < candidates.length && heroTemporalParticleCount < limit; index += stride) {
+      const point = candidates[index];
+      appendHeroTemporalParticle(effect, point.x, point.y, salt + index);
+    }
+  }
+
+  function buildHeroTemporalParticles(effect, layout) {
+    heroTemporalParticleCount = 0;
+    sampleHeroTemporalText(document.getElementById("heroTitle"), layout, effect, 250, 17);
+    sampleHeroTemporalText(document.getElementById("heroValue"), layout, effect, 420, 97);
+    effect.particleCount = heroTemporalParticleCount;
   }
 
   function drawHeroTemporal(now) {
@@ -319,50 +373,40 @@
     }
     effect.lastFrame = now;
 
-    const fade = Math.pow(1 - progress, 1.35);
     const context = heroTemporalContext;
     context.clearRect(0, 0, effect.width, effect.height);
 
-    const stripeCount = 11;
-    const stripeHeight = effect.sourceHeight / stripeCount;
-    const origin = clamp((effect.originX - effect.target.x) / Math.max(1, effect.target.width));
-    for (let index = 0; index < stripeCount; index += 1) {
-      const stripeCenter = (index + .5) / stripeCount;
-      const proximity = 1 - Math.min(1, Math.abs(stripeCenter - origin) * 1.5);
-      const fold = (temporalNoise(effect.seed + index * 7.13) - .5) * 18 * fade
-        + (stripeCenter - .5) * 16 * fade;
-      const vertical = (temporalNoise(effect.seed + index * 13.7) - .5) * 3 * fade;
-      context.save();
-      context.beginPath();
-      context.rect(effect.sourceX - 20, effect.sourceY + index * stripeHeight,
-        effect.sourceWidth + 40, stripeHeight + 1);
-      context.clip();
-      context.globalAlpha = (.06 + proximity * .22) * fade;
-      context.drawImage(heroTemporalSource, effect.sourceX + fold, effect.sourceY + vertical,
-        effect.sourceWidth, effect.sourceHeight);
-      context.restore();
-    }
-
     context.save();
-    context.strokeStyle = "#002fa7";
-    context.fillStyle = "#002fa7";
-    context.lineWidth = 1;
-    for (let index = 0; index < 7; index += 1) {
-      const lane = (index - 3) * 13;
-      const x = clamp(effect.originX + lane * (1 + progress * .35), 0, effect.width);
-      const reach = (18 + temporalNoise(effect.seed + index * 4.7) * 30) * fade;
-      context.globalAlpha = (.15 + (index % 2) * .08) * fade;
+    context.lineCap = "square";
+    for (let index = 0; index < effect.particleCount; index += 1) {
+      const particle = heroTemporalParticlePool[index];
+      const localProgress = clamp((progress - particle.delay) / Math.max(.01, 1 - particle.delay));
+      const envelope = Math.sin(Math.PI * localProgress);
+      const previousProgress = Math.max(0, localProgress - .065);
+      const previousEnvelope = Math.sin(Math.PI * previousProgress);
+      const wobble = Math.sin((localProgress * 2.6 + particle.phase) * Math.PI * 2) * envelope * 2.1;
+      const previousWobble = Math.sin((previousProgress * 2.6 + particle.phase) * Math.PI * 2)
+        * previousEnvelope * 2.1;
+      const x = particle.targetX + particle.driftX * envelope - particle.driftY * wobble * .08;
+      const y = particle.targetY + particle.driftY * envelope + particle.driftX * wobble * .08;
+      const previousX = particle.targetX + particle.driftX * previousEnvelope
+        - particle.driftY * previousWobble * .08;
+      const previousY = particle.targetY + particle.driftY * previousEnvelope
+        + particle.driftX * previousWobble * .08;
+      const alpha = (.20 + particle.brightness * .68) * Math.pow(1 - progress, .48)
+        * (.42 + envelope * .58);
+      if (alpha < .012) continue;
+
+      context.globalAlpha = alpha;
+      context.strokeStyle = particle.accent ? "#002fa7" : "#0a0a0a";
+      context.fillStyle = particle.accent ? "#002fa7" : "#0a0a0a";
+      context.lineWidth = particle.size;
       context.beginPath();
-      context.moveTo(x, effect.target.y - reach);
-      context.lineTo(x + lane * .14, effect.target.y + effect.target.height + reach);
+      context.moveTo(previousX, previousY);
+      context.lineTo(x, y);
       context.stroke();
-    }
-    for (let index = 0; index < 24; index += 1) {
-      const x = effect.target.x + temporalNoise(effect.seed + index * 5.19) * effect.target.width;
-      const y = effect.target.y + temporalNoise(effect.seed + index * 8.93) * effect.target.height;
-      const size = index % 5 === 0 ? 2 : 1;
-      context.globalAlpha = (.12 + temporalNoise(effect.seed + index) * .34) * fade;
-      context.fillRect(Math.round(x), Math.round(y), size, size);
+      context.fillRect(Math.round(x - particle.size * .5), Math.round(y - particle.size * .5),
+        particle.size, particle.size);
     }
     context.restore();
 
@@ -378,11 +422,9 @@
   function triggerHeroTemporalEffect(originX) {
     if (!surfaceActive || aboutOpen || document.hidden || reducedMotion()) return;
     const layout = resizeHeroTemporalCanvas();
-    const node = document.getElementById("heroValue");
-    if (!layout || !node) return;
-
-    const targetBox = node.getBoundingClientRect();
-    if (targetBox.width < 1 || targetBox.height < 1) return;
+    const titleNode = document.getElementById("heroTitle");
+    const valueNode = document.getElementById("heroValue");
+    if (!layout || (!titleNode && !valueNode)) return;
     const effect = {
       started: window.performance.now(),
       lastFrame: 0,
@@ -391,16 +433,13 @@
       width: layout.width,
       height: layout.height,
       originX: clamp(originX - layout.rect.left, 0, layout.width),
+      originY: layout.height * .5,
       seed: window.performance.now() * .001,
-      target: {
-        x: targetBox.left - layout.rect.left,
-        y: targetBox.top - layout.rect.top,
-        width: targetBox.width,
-        height: targetBox.height,
-      },
+      particleCount: 0,
     };
 
-    captureHeroTemporalSource(effect);
+    buildHeroTemporalParticles(effect, layout);
+    if (!effect.particleCount) return;
     heroTemporalEffect = effect;
     const hero = layout.hero;
     hero.classList.remove("temporal-active");
@@ -774,7 +813,10 @@
     const text = hero.text || "--";
     valueNode.textContent = text;
     valueNode.dataset.temporalText = text;
-    if (heroTemporalEffect) captureHeroTemporalSource(heroTemporalEffect);
+    if (heroTemporalEffect) {
+      const layout = resizeHeroTemporalCanvas();
+      if (layout) buildHeroTemporalParticles(heroTemporalEffect, layout);
+    }
     document.getElementById("heroUnit").textContent = hero.label || "GAIN";
     document.getElementById("heroCue").textContent = hero.id ? `${hero.label || hero.id} / ACTIVE PARAMETER` : "STEREO PROCESSING";
   }

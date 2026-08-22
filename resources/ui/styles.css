@@ -132,24 +132,11 @@ button:focus-visible,
 .section-index,
 .zone-number { color: var(--accent); }
 .hero h1 {
-  position: relative;
   margin: 0;
   font-size: 44px;
   font-weight: 200;
   line-height: .86;
 }
-.hero h1::before,
-.hero h1::after {
-  position: absolute;
-  top: 0;
-  left: 0;
-  content: attr(data-temporal-text);
-  opacity: 0;
-  pointer-events: none;
-  white-space: nowrap;
-}
-.hero h1::before { color: var(--accent); clip-path: inset(9% 0 57% 0); }
-.hero h1::after { color: var(--ink); clip-path: inset(54% 0 12% 0); }
 .hero-cue { color: var(--grey-3); }
 
 .hero-readout { display: flex; align-items: stretch; min-width: 0; gap: 14px; }
@@ -182,9 +169,6 @@ button:focus-visible,
 .hero.gesture-active .hero-pivot { animation: hero-pivot 300ms steps(6, end); }
 .hero-value-wrap { display: flex; min-width: 120px; flex-direction: column; align-items: flex-end; justify-content: center; border-left: 1px solid var(--grey-2); padding-left: 14px; }
 .hero-value { position: relative; overflow: hidden; max-width: 236px; font-size: 50px; font-weight: 200; line-height: .9; text-overflow: ellipsis; white-space: nowrap; }
-.hero.temporal-active h1 { animation: hero-title-fold 620ms steps(8, end); }
-.hero.temporal-active h1::before { animation: hero-title-slice-a 620ms steps(8, end); }
-.hero.temporal-active h1::after { animation: hero-title-slice-b 620ms steps(8, end); }
 .hero.temporal-active .hero-value { animation: hero-value-fold 620ms steps(8, end); }
 .hero-unit { margin-top: 5px; color: var(--accent); }
 .hero-meters { display: flex; gap: 6px; align-items: stretch; }
@@ -397,28 +381,6 @@ button:focus-visible,
   100% { color: var(--ink); transform: translateX(0); }
 }
 
-@keyframes hero-title-fold {
-  0% { color: var(--ink); transform: translateX(0); }
-  18% { color: var(--accent); transform: translateX(-1px); }
-  42% { color: var(--ink); transform: translateX(2px); }
-  70% { color: var(--accent); transform: translateX(-1px); }
-  100% { color: var(--ink); transform: translateX(0); }
-}
-
-@keyframes hero-title-slice-a {
-  0%, 100% { opacity: 0; transform: translateX(0); }
-  16% { opacity: .72; transform: translateX(-10px); }
-  42% { opacity: .28; transform: translateX(13px); }
-  68% { opacity: .16; transform: translateX(-4px); }
-}
-
-@keyframes hero-title-slice-b {
-  0%, 100% { opacity: 0; transform: translateX(0); }
-  20% { opacity: .34; transform: translateX(9px); }
-  45% { opacity: .52; transform: translateX(-12px); }
-  72% { opacity: .12; transform: translateX(3px); }
-}
-
 @media (max-width: 950px) {
   .topbar { padding-right: 10px; padding-left: 10px; gap: 9px; }
   .top-route { display: none; }
@@ -478,9 +440,6 @@ button:focus-visible,
   .hero.gesture-active .hero-fold,
   .hero.gesture-active .hero-pivot,
   .hero.temporal-active .hero-value,
-  .hero.temporal-active h1,
-  .hero.temporal-active h1::before,
-  .hero.temporal-active h1::after,
   .knob.feedback .knob-dial,
   .toggle.feedback .toggle-track,
   .segment.feedback,
