@@ -6,4 +6,4 @@
 
 ## Validation boundary
 
-Both CI lanes build Release artefacts and run `UTTTests`. The macOS package is not Developer ID signed and not notarized because this repository has no Apple signing credentials; its contained VST3, AU, and AUv3 container app are ad-hoc signed. Gatekeeper approval and host validation (`auval`, DAW/AUv3 host smoke tests) remain required before a signed production distribution.
+The GitHub macOS lane builds Release artefacts and runs `UTTTests`; the Windows ZIP is built and validated on the local Windows release environment before upload. The macOS package is not Developer ID signed and not notarized because this repository has no Apple signing credentials; its contained VST3, AU, and AUv3 container app are ad-hoc signed. Gatekeeper approval and host validation (`auval`, DAW/AUv3 host smoke tests) remain required before a signed production distribution.

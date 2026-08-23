@@ -1025,12 +1025,11 @@ public:
                     && macInstallerBuild.contains ("lipo -archs")
                     && macInstallerBuild.contains ("codesign --verify --deep --strict"),
                 "macOS package must install VST3, AU and the universal AUv3 container app");
-        expect (releaseWorkflow.contains ("windows-2022")
-                    && releaseWorkflow.contains ("macos-14")
+        expect (releaseWorkflow.contains ("macos-14")
                     && releaseWorkflow.contains ("UTT_BUILD_AUV3=ON")
                     && releaseWorkflow.contains ("UTT_All UTTTests")
                     && releaseWorkflow.contains ("gh release create"),
-                "tag workflow must build, test and publish both platform release assets");
+                "tag workflow must build, test and publish the macOS installer asset");
     }
 };
 

@@ -159,8 +159,8 @@ bash installer/build-macos-package.sh build-mac
 ### GitHub 发行
 
 推送与 `CMakeLists.txt` 版本一致的标签（例如 `v0.3.1`）会触发
-`.github/workflows/release.yml`：Windows 和 macOS 都先构建 Release、运行
-`UTTTests`，随后把 Windows ZIP、macOS PKG 及各自 SHA-256 上传到同一个 GitHub
+`.github/workflows/release.yml`：GitHub 负责 macOS universal Release、`UTTTests`
+与 PKG 上传；Windows ZIP 由已经验证的本机 Release 打包后直接上传到同一个 GitHub
 Release。
 
 ---

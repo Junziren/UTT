@@ -77,9 +77,9 @@ I/0 机械开关、旋钮完整协议（拖拽 320px、Shift 1600px、滚轮 0.0
 
 | 项 | 状态 | 证据/边界 |
 |---|---|---|
-| Windows release ZIP | 本地待打包 | `build-installer.ps1` 从 canonical Release 产物生成 Setup、VST3、Standalone、内外 SHA-256 |
+| Windows release ZIP | 本地已打包 | `build-installer.ps1` 从 canonical Release 产物生成 Setup、VST3、Standalone、内外 SHA-256 |
 | macOS universal PKG | CI 待执行 | `pkgbuild` 安装 VST3、AU 与包含 AUv3 的 `UTT.app`；打包前检查双架构 |
-| GitHub Release | 待推送 tag | `vX.Y.Z` 自动构建 Windows/macOS、运行 `UTTTests` 并上传资产 |
+| GitHub Release | tag 触发 | 本机上传 Windows ZIP；GitHub macOS runner 构建/测试并追加 universal PKG |
 | Apple Developer ID/notarization | 未完成 | CI 对内部 bundle 做 ad-hoc 签名；PKG 仍不是 Developer ID 签名且未 notarize |
 
 ## 明确未完成 / 未验证（后续计划）
