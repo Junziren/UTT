@@ -8,8 +8,8 @@ Bilibili: [space.bilibili.com/227573145](https://space.bilibili.com/227573145)
 ## 功能概述
 
 UTT 是一款综合性的立体声通道条工具，适用于混音、母带处理和音频分析。
-v0.3.0 完成 DSP 正确性重写（BS.1770 响度、实时安全录音、参数平滑），界面更换为
-基于 WebView2 的纸面仪器风格 UI。
+v0.3.1 保持 DSP 和参数 ABI 不变，完成了 WebView2 纸面仪器 UI 的粒子文字 Hero、
+参数信号路径帮助、openFAD About 信息与跨平台发行链路。
 
 ### DSP 处理模块
 
@@ -50,6 +50,14 @@ v0.3.0 完成 DSP 正确性重写（BS.1770 响度、实时安全录音、参数
 - IKB 参数反馈只在直接操作时短暂显示，支持 `prefers-reduced-motion`，不伪造 meter 或 scope 数据
 - 未安装 WebView2 运行时时自动降级为极简原生面板（音频功能不受影响）
 
+### 插件格式范围
+
+| 平台 | 可发行格式 |
+|---|---|
+| Windows x64 | VST3 + Standalone |
+| macOS universal | VST3 + AU + Standalone（内嵌可安装的 AUv3 扩展） |
+| VST2 | **不支持**；当前参数/二进制/安装器均没有 VST2 目标 |
+
 ---
 
 ## 安装
@@ -68,6 +76,19 @@ v0.3.0 完成 DSP 正确性重写（BS.1770 响度、实时安全录音、参数
 ```
 C:\Program Files\Common Files\VST3\
 ```
+
+### macOS Universal 安装包
+
+GitHub Release 的 `UTT-<version>-macos-universal-unsigned.pkg` 会安装：
+
+- `/Library/Audio/Plug-Ins/VST3/UTT.vst3`
+- `/Library/Audio/Plug-Ins/Components/UTT.component`
+- `/Applications/UTT.app`（内嵌 `UTT.appex`，作为 AUv3 容器应用）
+
+当前 macOS 包本身**未使用 Developer ID 签名、未 notarize**；其中的 VST3、AU 与
+AUv3 容器应用使用 ad-hoc 签名保证 bundle 完整性。首次打开或安装时仍需要按
+Gatekeeper 的手动确认流程。GitHub CI 会编译和打包，但 Apple 宿主、`auval` 与
+AUv3 实机验证仍需单独记录，详情见 [docs/APPLE_LANE.md](docs/APPLE_LANE.md)。
 
 ### 支持的宿主
 
@@ -116,18 +137,31 @@ cmake --build build --target UTT_All UTTTests
 .\installer\build-installer.ps1 -DownloadPrerequisites
 ```
 
-输出目录为 `dist\UTT-0.3.0-windows-x64\`，包含 VST3、Standalone、单文件
-`UTT_Setup.exe` 与 `SHA256SUMS.txt`。安装器的前置运行库签名会在打包前校验。
+输出目录为 `dist\UTT-<version>-windows-x64\`，包含 VST3、Standalone、单文件
+`UTT_Setup.exe` 与 `SHA256SUMS.txt`。同时会生成可上传的
+`dist\UTT-<version>-windows-x64.zip` 及其外部 `.sha256`。安装器的前置运行库签名
+会在打包前校验。
 
 ### macOS / Apple 车道
 
 ```bash
-cmake -B build-mac -G Xcode -DCMAKE_BUILD_TYPE=Release   # VST3 + AU + AUv3
+cmake -S . -B build-mac -G Xcode \
+  -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+  -DUTT_BUILD_AUV3=ON
 cmake --build build-mac --config Release --target UTT_All UTTTests
+bash installer/build-macos-package.sh build-mac
 ```
 
-AUv3/iOS 为**预备车道**，本仓库尚无 Apple 侧验证证据，
-流程与验收清单见 [docs/APPLE_LANE.md](docs/APPLE_LANE.md)。
+桌面 macOS 包含 VST3、AU、Standalone 与嵌入 Standalone 的 AUv3 `.appex`；iOS
+仍需要单独的容器 App。Apple 侧验证边界与验收清单见
+[docs/APPLE_LANE.md](docs/APPLE_LANE.md)。
+
+### GitHub 发行
+
+推送与 `CMakeLists.txt` 版本一致的标签（例如 `v0.3.1`）会触发
+`.github/workflows/release.yml`：Windows 和 macOS 都先构建 Release、运行
+`UTTTests`，随后把 Windows ZIP、macOS PKG 及各自 SHA-256 上传到同一个 GitHub
+Release。
 
 ---
 
@@ -149,12 +183,13 @@ UTT 基于 **GNU General Public License v3.0** 发布。
 
 ```
 UTT/
-├── CMakeLists.txt          # 构建配置（格式矩阵：Win VST3+Standalone / Apple VST3+AU+AUv3）
+├── CMakeLists.txt          # 构建配置（Win VST3+Standalone / Apple VST3+AU+AUv3+Standalone）
 ├── config/
 │   └── parameters-v2.json  # 参数契约（宿主 ABI 真源）
 ├── docs/
 │   ├── IDENTIFIERS.md      # 标识符冻结合同（bundle id / FourCC / 参数 ID）
-│   └── APPLE_LANE.md       # AUv3 预备车道与验收清单（UNVERIFIED）
+│   ├── APPLE_LANE.md       # macOS/AUv3 安装与验收边界
+│   └── RELEASE_NOTES.md    # GitHub Release 说明模板
 ├── resources/ui/           # WebView 前端（index.html / styles.css / app.js，离线打包）
 ├── src/
 │   ├── PluginProcessor.cpp # DSP 链路与状态
@@ -176,6 +211,7 @@ UTT/
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| **v0.3.1** | 2026-08-23 | Canvas 粒子 UTT Hero、参数悬停说明与 openFAD About；Windows ZIP + 安装器、macOS universal PKG（VST3/AU/Standalone 内嵌 AUv3）及 GitHub Actions 发行链路 |
 | **v0.3.0** | 2026-08-22 | DSP 正确性重写（BS.1770 LUFS、录音实时安全、参数平滑、伪参数清理 v2）；WebView2 纸面仪器 UI、参数信号路径帮助与局部 IKB 反馈；离线运行库安装器；pluginval strictness 10 |
 | v0.2.0 | 2026-06-04 | 录制功能完成，About 界面，品牌更名 UnpureBloom |
 | v0.1.0 | 2026-05 | 初始版本，基础 DSP + GUI |

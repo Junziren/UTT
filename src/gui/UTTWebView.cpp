@@ -17,6 +17,12 @@ constexpr int scopePoints = 256;
 constexpr juce::uint32 readyTimeoutMs = 5000;
 constexpr char uiBuildPlaceholder[] = "__UTT_UI_BUILD_ID__";
 
+#if JUCE_WINDOWS
+constexpr char unavailableWebViewMessage[] = "WebView2 runtime is unavailable.";
+#else
+constexpr char unavailableWebViewMessage[] = "The system web view is unavailable.";
+#endif
+
 constexpr std::array<const char*, 18> parameterIDs {
     "dcOffsetBypass", "phaseInvertL", "phaseInvertR", "phaseOffset",
     "gain", "msMode", "monoMode", "stereoSeparation", "monoToStereo",
@@ -125,7 +131,7 @@ UTTWebView::UTTWebView (UTTProcessor& p,
 
     if (! juce::WebBrowserComponent::areOptionsSupported (makeBrowserOptions (*this)))
     {
-        reportFailure (SurfaceState::unavailable, "WebView2 runtime is unavailable.");
+        reportFailure (SurfaceState::unavailable, unavailableWebViewMessage);
         return;
     }
 
@@ -546,7 +552,7 @@ juce::var UTTWebView::buildFullState() const
 
     root->setProperty ("params", parameters);
     root->setProperty ("hero", buildHeroState());
-    root->setProperty ("version", "v0.3.0");
+    root->setProperty ("version", "v0.3.1");
     root->setProperty ("uiBuild", UTT_UI_BUILD_ID);
 
     auto* engine = new juce::DynamicObject();

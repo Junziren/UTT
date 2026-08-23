@@ -9,8 +9,8 @@ class UTTProcessor;
 
 // Owns UTT's embedded, offline WebView surface and its versioned native bridge.
 // The processor/APVTS remain the single source of truth for every parameter and
-// all telemetry. If WebView2 is unavailable or the document never becomes
-// ready, the owner receives a failure callback and presents the native fallback.
+// all telemetry. If the platform web view is unavailable or the document never
+// becomes ready, the owner receives a failure callback and presents the native fallback.
 class UTTWebView final : public juce::Component,
                          private juce::Timer,
                          private juce::AudioProcessorValueTreeState::Listener,

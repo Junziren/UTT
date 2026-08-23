@@ -8,7 +8,7 @@ using System.Windows.Forms;
 class UTTInstaller
 {
     private const string ProductName = "UTT - Utility Toolbox";
-    private const string ProductVersion = "0.3.0";
+    private const string ProductVersion = "0.3.1";
     private const string ZipResource = "UTTInstaller.Payload.utt_data.zip";
     private const string WebViewResource = "UTTInstaller.Payload.MicrosoftEdgeWebView2RuntimeInstallerX64.exe";
     private const string VcRedistResource = "UTTInstaller.Payload.VC_redist.x64.exe";

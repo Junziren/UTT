@@ -12,15 +12,28 @@ if ($Configuration -ne "Release") {
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$projectFile = Join-Path $repoRoot "CMakeLists.txt"
+$projectText = Get-Content -LiteralPath $projectFile -Raw
+$versionMatch = [regex]::Match(
+    $projectText,
+    'project\s*\(\s*UTT\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)',
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+if (-not $versionMatch.Success) {
+    throw "Could not read the UTT product version from $projectFile."
+}
+$version = $versionMatch.Groups[1].Value
+
 $releaseRoot = Join-Path $repoRoot "build\UTT_artefacts\Release"
 $vst3Source = Join-Path $releaseRoot "VST3\UTT.vst3"
 $standaloneSource = Join-Path $releaseRoot "Standalone\UTT.exe"
 $payloadRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "payload"))
 $cacheRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "cache"))
-$distRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "dist\UTT-0.3.0-windows-x64"))
+$distRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "dist\UTT-$version-windows-x64"))
+$releaseArchive = "$distRoot.zip"
+$releaseArchiveHashPath = "$releaseArchive.sha256"
 $workspacePrefix = $repoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 
-foreach ($path in @($payloadRoot, $distRoot)) {
+foreach ($path in @($payloadRoot, $distRoot, $releaseArchive, $releaseArchiveHashPath)) {
     if (-not $path.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove a path outside the workspace: $path"
     }
@@ -31,6 +44,15 @@ if (-not (Test-Path -LiteralPath $vst3Source)) {
 }
 if (-not (Test-Path -LiteralPath $standaloneSource)) {
     throw "Missing canonical Standalone executable: $standaloneSource. Build UTT_All first."
+}
+
+function Assert-VerifiedMicrosoftSignature {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Microsoft Corporation") {
+        throw "Microsoft signature verification failed for ${Path}: $($signature.Status)"
+    }
 }
 
 function Get-VerifiedMicrosoftDownload {
@@ -69,10 +91,7 @@ function Get-VerifiedMicrosoftDownload {
         }
     }
 
-    $signature = Get-AuthenticodeSignature -FilePath $Destination
-    if ($signature.Status -ne "Valid" -or $signature.SignerCertificate.Subject -notmatch "Microsoft Corporation") {
-        throw "Microsoft signature verification failed for ${Destination}: $($signature.Status)"
-    }
+    Assert-VerifiedMicrosoftSignature -Path $Destination
 }
 
 if (Test-Path -LiteralPath $payloadRoot) {
@@ -80,6 +99,11 @@ if (Test-Path -LiteralPath $payloadRoot) {
 }
 if (Test-Path -LiteralPath $distRoot) {
     Remove-Item -LiteralPath $distRoot -Recurse -Force
+}
+foreach ($path in @($releaseArchive, $releaseArchiveHashPath)) {
+    if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Force
+    }
 }
 New-Item -ItemType Directory -Path $payloadRoot, $cacheRoot, $distRoot -Force | Out-Null
 
@@ -96,17 +120,35 @@ if ($DownloadPrerequisites -or -not (Test-Path -LiteralPath $webViewCache)) {
 if ($DownloadPrerequisites -or -not (Test-Path -LiteralPath $vcRedistCache)) {
     Get-VerifiedMicrosoftDownload -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -Destination $vcRedistCache
 }
+Assert-VerifiedMicrosoftSignature -Path $webViewCache
+Assert-VerifiedMicrosoftSignature -Path $vcRedistCache
 $webViewPayload = Join-Path $payloadRoot "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
 $vcRedistPayload = Join-Path $payloadRoot "VC_redist.x64.exe"
 Copy-Item -LiteralPath $webViewCache -Destination $webViewPayload
 Copy-Item -LiteralPath $vcRedistCache -Destination $vcRedistPayload
 
-$csc = "D:\VS2022BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe"
-if (-not (Test-Path -LiteralPath $csc)) {
-    throw "MSVC Roslyn compiler not found: $csc"
+function Find-CSharpCompiler {
+    $vsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -LiteralPath $vsWhere) {
+        $candidate = @(& $vsWhere -latest -products "*" -requires Microsoft.Component.MSBuild `
+            -find "MSBuild\Current\Bin\Roslyn\csc.exe") |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First 1
+        if ($null -ne $candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    $frameworkCompiler = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    if (Test-Path -LiteralPath $frameworkCompiler) {
+        return $frameworkCompiler
+    }
+
+    throw "No C# compiler was found. Install Visual Studio Build Tools or .NET Framework 4.x."
 }
 
 $frameworkRoot = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319"
+$csc = Find-CSharpCompiler
 $setupPath = Join-Path $distRoot "UTT_Setup.exe"
 $compilerArgs = @(
     "/nologo",
@@ -145,4 +187,10 @@ $hashes = Get-ChildItem -LiteralPath $distRoot -File -Recurse |
     }
 Set-Content -LiteralPath $hashPath -Value $hashes -Encoding Ascii
 
+Compress-Archive -LiteralPath $distRoot -DestinationPath $releaseArchive -CompressionLevel Optimal
+$archiveHash = (Get-FileHash -LiteralPath $releaseArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $releaseArchiveHashPath -Value (
+    "$archiveHash  $([IO.Path]::GetFileName($releaseArchive))") -Encoding Ascii
+
 Write-Host "Built installer and release artefacts: $distRoot"
+Write-Host "Built release archive: $releaseArchive"

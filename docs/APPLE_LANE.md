@@ -1,7 +1,7 @@
-# Apple 车道（AUv3 生态对齐）—— 预备文档
+# Apple 发行车道（VST3 / AU / AUv3）
 
-> **状态：UNVERIFIED。** 本机为 Windows。本文档描述的一切 Apple 侧内容都只是
-> 代码与构建预备，**没有任何 macOS/iOS 构建或真机证据**。
+> **状态：CI 构建待验证。** 本机为 Windows。GitHub Actions 会在 macOS runner 上
+> 构建 universal 安装包；在首个成功运行前，本仓库仍**没有 macOS/iOS 宿主或真机证据**。
 > 「Windows 编译通过 + pluginval 通过 ≠ AUv3 已验证。」
 > Apple 证据只可以在 Mac/Xcode 环境产生，然后经 commit/PR 回流到本仓库。
 
@@ -9,7 +9,8 @@
 
 - CMake 格式矩阵（`CMakeLists.txt`）：
   - Windows/Linux：`VST3 + Standalone`
-  - macOS：`VST3 AU AUv3`（AUv3 产出 `.appex`）
+  - macOS：`VST3 + AU + Standalone + AUv3`
+    （JUCE 把 `UTT.appex` 嵌入 `UTT.app/Contents/PlugIns/`）
   - iOS：`-DCMAKE_SYSTEM_NAME=iOS` 时 `AUv3 + Standalone`
 - 标识符冻结：见 `docs/IDENTIFIERS.md`（bundle id 规划、aufx、参数 ID ABI）。
 - 沙盒安全整改：
@@ -24,21 +25,37 @@
   `WebBrowserComponent` 默认后端即 WKWebView，资源经 `ResourceProvider`
   白名单提供，不依赖本地 HTTP。
 
-## 2. macOS 构建（在 Mac 上执行）
+## 2. macOS 构建与可安装 AUv3 产品（在 Mac 上执行）
 
 ```bash
-cmake -B build-mac -G Xcode -DCMAKE_BUILD_TYPE=Release
-cmake --build build-mac --config Release --target UTT
+cmake -S . -B build-mac -G Xcode \
+  -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+  -DUTT_BUILD_AUV3=ON
+cmake --build build-mac --config Release --target UTT_All UTTTests
+./build-mac/UTTTests_artefacts/Release/UTTTests
+bash installer/build-macos-package.sh build-mac
 ```
 
 产出：
 - `build-mac/UTT_artefacts/Release/VST3/UTT.vst3`
 - `.../AU/UTT.component`（AUv2）
-- `.../AUv3/UTT.appex`（需嵌入宿主应用才可注册）
+- `.../Standalone/UTT.app`
+- `.../Standalone/UTT.app/Contents/PlugIns/UTT.appex`（AUv3，嵌入真正的容器应用）
+- `dist/UTT-<version>-macos-universal-unsigned.pkg`（PKG 未用 Developer ID 签名）
+
+PKG 安装：
+- `/Library/Audio/Plug-Ins/VST3/UTT.vst3`
+- `/Library/Audio/Plug-Ins/Components/UTT.component`
+- `/Applications/UTT.app`，其中包含可注册的 AUv3 extension
+
+不要单独复制 `.appex` 到系统插件目录；AUv3 的可安装产品是包含 extension 的
+`UTT.app`。安装器会在生成前检查 VST3、AU、Standalone、嵌入 AUv3 四者都包含
+`x86_64` 和 `arm64` slice，并对四个 bundle 做 ad-hoc code sign 与验证。
 
 注册验证：
 ```bash
 auval -v aufx UT02 UT01     # AUv2 验证必须先过
+pluginkit -m -p com.apple.AudioUnit-UI  # 检查系统是否登记 AUv3 扩展
 ```
 
 ## 3. iOS 构建（在 Mac 上执行）
@@ -59,7 +76,7 @@ AUv3 on iOS 必须有容器 App：需要新建一个宿主 App target，把 `UTT
 
 构建/签名：
 - [ ] macOS `auval -v aufx UT02 UT01` 通过
-- [ ] AUv3 appex 嵌入测试容器后被系统注册
+- [ ] 安装 `/Applications/UTT.app` 后，内嵌 AUv3 被系统注册
 - [ ] 签名 + notarization 通过（分发形态）
 - [ ] iOS 真机 build & install
 
@@ -85,6 +102,7 @@ AUv3 on iOS 必须有容器 App：需要新建一个宿主 App target，把 `UTT
 | 沙盒写路径 | CrashLog/录音路径已整改 | iOS 文件 App 取录音 |
 | 扩展被宿主随时杀死 | 录音 FIFO 音频线程只入队；writer 线程生命周期挂 prepare/release | 杀进程后文件完整性 |
 | App Group 缺失导致共享失败 | 规划在 §3 | entitlements 实配 |
+| 未 Developer ID 签名/未 notarize PKG | CI 生成 universal PKG，内部 bundle 为 ad-hoc 签名 | Developer ID 签名、notarization、Gatekeeper 冷装 |
 
 ## 6. 证据回流格式
 

@@ -28,18 +28,20 @@ Then create the installer and release folder:
 .\installer\build-installer.ps1 -DownloadPrerequisites
 ```
 
-The output is written to:
+The output is written to the CMake product version directory:
 
 ```text
-dist\UTT-0.3.0-windows-x64\
+dist\UTT-<version>-windows-x64\
 ```
 
 `SHA256SUMS.txt` covers every shipped file, including `LICENSE.txt`. The
-temporary payload directory and release output are deliberately not tracked by
-Git.
+script also creates `dist\UTT-<version>-windows-x64.zip` and an adjacent
+`.sha256` file for GitHub Releases. The temporary payload directory and release
+output are deliberately not tracked by Git.
 
 ## Validation Boundary
 
 The build script verifies Microsoft Authenticode signatures before embedding
-prerequisites and checks the extracted VST3 module path. A clean offline VM,
-code signing, and DAW smoke tests remain separate release gates.
+prerequisites, checks the extracted VST3 module path, and hashes the final ZIP.
+A clean offline VM, code signing, and DAW smoke tests remain separate release
+gates.

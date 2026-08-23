@@ -13,18 +13,22 @@
   let lastAboutInvoker = null;
   let aboutOpen = false;
   let aboutCloseTimer = null;
-  let heroFeedbackTimer = null;
   let heroTemporalCanvas = null;
   let heroTemporalContext = null;
   let heroTemporalFrame = null;
-  let heroTemporalEffect = null;
-  let heroTemporalParticleCount = 0;
+  let heroTemporalLastFrame = 0;
+  let heroTemporalScene = null;
   const heroTemporalParticlePool = [];
   const heroTemporalSource = document.createElement("canvas");
   const heroTemporalSourceContext = heroTemporalSource.getContext("2d", {
     alpha: true,
     willReadFrequently: true,
   });
+  const heroTemporalWordmarkPaths = Object.freeze([
+    "M0 0H34V111C34 125 41 132 54 132C68 132 75 125 75 111V0H110V114C110 149 91 168 54 168C18 168 0 149 0 114Z",
+    "M128 0H253V31H208V168H173V31H128Z",
+    "M271 0H396V31H351V168H316V31H271Z",
+  ]);
   const feedbackNodes = new Set();
 
   const inputRows = [
@@ -250,16 +254,14 @@
     heroTemporalContext = heroTemporalCanvas?.getContext("2d", { alpha: true }) || null;
   }
 
-  function clearHeroTemporalEffect() {
+  function pauseHeroTemporalScene() {
     if (heroTemporalFrame !== null) {
       window.cancelAnimationFrame(heroTemporalFrame);
       heroTemporalFrame = null;
     }
-    heroTemporalEffect = null;
-    heroTemporalParticleCount = 0;
+    heroTemporalLastFrame = 0;
     if (heroTemporalCanvas && heroTemporalContext)
       heroTemporalContext.clearRect(0, 0, heroTemporalCanvas.width, heroTemporalCanvas.height);
-    document.querySelector(".hero")?.classList.remove("temporal-active");
   }
 
   function resizeHeroTemporalCanvas() {
@@ -276,213 +278,243 @@
       heroTemporalCanvas.height = pixelHeight;
     }
     heroTemporalContext.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { hero, rect: hero.getBoundingClientRect(), width, height, dpr };
+    const rect = hero.getBoundingClientRect();
+    const copyRect = document.querySelector(".hero-copy")?.getBoundingClientRect();
+    const readoutRect = document.querySelector(".hero-readout")?.getBoundingClientRect();
+    const leftLimit = clamp((copyRect?.right || rect.left + width * .13) - rect.left + 22,
+      width * .13, width * .43);
+    const rightLimit = clamp((readoutRect?.left || rect.left + width * .86) - rect.left - 24,
+      width * .56, width * .91);
+    const availableWidth = Math.max(190, rightLimit - leftLimit);
+    const wordWidth = Math.min(availableWidth, clamp(width * .49, 260, 590));
+    const wordHeight = clamp(height * .66, 54, 88);
+    const wordLeft = leftLimit + (availableWidth - wordWidth) * .5;
+    const quietRects = [];
+
+    [copyRect, readoutRect].forEach((box) => {
+      if (!box || box.width < 1 || box.height < 1) return;
+      quietRects.push({
+        left: clamp(box.left - rect.left - 10, 0, width),
+        top: clamp(box.top - rect.top - 8, 0, height),
+        right: clamp(box.right - rect.left + 10, 0, width),
+        bottom: clamp(box.bottom - rect.top + 8, 0, height),
+        softness: 18,
+      });
+    });
+
+    return {
+      hero,
+      rect,
+      width,
+      height,
+      dpr,
+      originX: wordLeft + wordWidth * .5,
+      originY: height * .5,
+      wordLeft,
+      wordTop: (height - wordHeight) * .5,
+      wordWidth,
+      wordHeight,
+      quietRects,
+    };
   }
 
-  function appendHeroTemporalParticle(effect, targetX, targetY, salt) {
-    const index = heroTemporalParticleCount;
-    const particle = heroTemporalParticlePool[index] || {};
-    const radialX = targetX - effect.originX;
-    const radialY = targetY - effect.originY;
-    const radialLength = Math.max(1, Math.hypot(radialX, radialY));
-    const spread = 9 + temporalNoise(effect.seed + salt * 3.17) * 31;
-    const cross = (temporalNoise(effect.seed + salt * 7.09) - .5) * 18;
-    const directionX = radialX / radialLength;
-    const directionY = radialY / radialLength;
-
-    particle.targetX = targetX;
-    particle.targetY = targetY;
-    particle.driftX = directionX * spread - directionY * cross;
-    particle.driftY = directionY * spread + directionX * cross;
-    particle.phase = temporalNoise(effect.seed + salt * 11.71);
-    particle.delay = temporalNoise(effect.seed + salt * 5.63) * .16;
-    particle.size = temporalNoise(effect.seed + salt * 17.47) > .86 ? 1.8 : 1.05;
-    particle.accent = temporalNoise(effect.seed + salt * 23.81) > .82;
-    particle.brightness = .38 + temporalNoise(effect.seed + salt * 29.23) * .62;
-    heroTemporalParticlePool[index] = particle;
-    heroTemporalParticleCount += 1;
+  function heroTemporalQuietFactor(scene, x, y) {
+    let factor = 1;
+    scene.quietRects.forEach((rect) => {
+      const dx = Math.max(rect.left - x, 0, x - rect.right);
+      const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+      const distance = Math.hypot(dx, dy);
+      if (distance >= rect.softness) return;
+      const edge = clamp(distance / rect.softness);
+      factor = Math.min(factor, .05 + .95 * Math.pow(edge, 1.7));
+    });
+    return factor;
   }
 
-  function sampleHeroTemporalText(node, layout, effect, limit, salt) {
-    if (!node || !heroTemporalSourceContext || heroTemporalParticleCount >= limit) return;
+  function buildHeroTemporalScene() {
+    const layout = resizeHeroTemporalCanvas();
+    if (!layout || !heroTemporalSourceContext) return null;
 
-    const targetBox = node.getBoundingClientRect();
-    if (targetBox.width < 1 || targetBox.height < 1) return;
-
-    const style = window.getComputedStyle(node);
-    const fontSize = Math.max(1, Math.round(parseFloat(style.fontSize) || 44));
-    const padding = 7;
-    const sourceWidth = Math.max(1, Math.ceil(targetBox.width + padding * 2));
-    const sourceHeight = Math.max(1, Math.ceil(fontSize * 1.28 + padding * 2));
+    const sourceWidth = 412;
+    const sourceHeight = 184;
     heroTemporalSource.width = sourceWidth;
     heroTemporalSource.height = sourceHeight;
     heroTemporalSourceContext.setTransform(1, 0, 0, 1, 0, 0);
     heroTemporalSourceContext.clearRect(0, 0, sourceWidth, sourceHeight);
     heroTemporalSourceContext.save();
-    heroTemporalSourceContext.beginPath();
-    heroTemporalSourceContext.rect(padding, 0, targetBox.width, sourceHeight);
-    heroTemporalSourceContext.clip();
-    heroTemporalSourceContext.fillStyle = "#0a0a0a";
-    heroTemporalSourceContext.font = `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
-    heroTemporalSourceContext.textAlign = "left";
-    heroTemporalSourceContext.textBaseline = "middle";
-    heroTemporalSourceContext.fillText(node.textContent || "--", padding, sourceHeight * .52);
+    heroTemporalSourceContext.translate(8, 8);
+    heroTemporalSourceContext.fillStyle = "#ffffff";
+    heroTemporalWordmarkPaths.forEach((path) => {
+      heroTemporalSourceContext.fill(new Path2D(path));
+    });
     heroTemporalSourceContext.restore();
 
     const pixels = heroTemporalSourceContext.getImageData(0, 0, sourceWidth, sourceHeight).data;
     const candidates = [];
-    const step = targetBox.width > 160 ? 3 : 2;
-    const sourceX = targetBox.left - layout.rect.left - padding;
-    const sourceY = targetBox.top - layout.rect.top + targetBox.height * .5 - sourceHeight * .5;
+    const step = layout.width >= 1060 ? 3 : 4;
+    let minX = sourceWidth;
+    let minY = sourceHeight;
+    let maxX = 0;
+    let maxY = 0;
+
     for (let y = 0; y < sourceHeight; y += step) {
       for (let x = 0; x < sourceWidth; x += step) {
-        if (pixels[(y * sourceWidth + x) * 4 + 3] >= 100)
-          candidates.push({ x: sourceX + x, y: sourceY + y });
+        if (pixels[(y * sourceWidth + x) * 4 + 3] < 100) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        candidates.push({
+          x,
+          y,
+          rank: temporalNoise(x * .037 + y * .071),
+        });
       }
     }
 
-    const remaining = Math.max(0, limit - heroTemporalParticleCount);
-    const stride = Math.max(1, Math.ceil(candidates.length / Math.max(1, remaining)));
-    const offset = Math.floor(temporalNoise(effect.seed + salt) * stride);
-    for (let index = offset; index < candidates.length && heroTemporalParticleCount < limit; index += stride) {
-      const point = candidates[index];
-      appendHeroTemporalParticle(effect, point.x, point.y, salt + index);
-    }
+    if (maxX <= minX || maxY <= minY || !candidates.length) return null;
+
+    const limit = Math.min(1450, Math.max(680,
+      Math.round(layout.wordWidth * layout.wordHeight / 24)));
+    candidates.sort((a, b) => a.rank - b.rank);
+    candidates.length = Math.min(candidates.length, limit);
+
+    const sourceWordWidth = Math.max(1, maxX - minX);
+    const sourceWordHeight = Math.max(1, maxY - minY);
+    const seed = layout.width * .013 + layout.height * .071;
+
+    candidates.forEach((point, index) => {
+      const particle = heroTemporalParticlePool[index] || {};
+      particle.targetX = layout.wordLeft + (point.x - minX) / sourceWordWidth * layout.wordWidth;
+      particle.targetY = layout.wordTop + (point.y - minY) / sourceWordHeight * layout.wordHeight;
+      particle.z = temporalNoise(seed + index * 5.71);
+      particle.speed = .004 + temporalNoise(seed + index * 11.13) * .008;
+      particle.hold = temporalNoise(seed + index * 3.17) * 54;
+      particle.holdMax = 58 + temporalNoise(seed + index * 17.07) * 150;
+      particle.size = temporalNoise(seed + index * 23.61) > .88 ? 1.55 : 1.0;
+      particle.accent = temporalNoise(seed + index * 31.41) > .992;
+      heroTemporalParticlePool[index] = particle;
+    });
+
+    return { ...layout, particleCount: candidates.length };
   }
 
-  function buildHeroTemporalParticles(effect, layout) {
-    heroTemporalParticleCount = 0;
-    sampleHeroTemporalText(document.getElementById("heroTitle"), layout, effect, 250, 17);
-    sampleHeroTemporalText(document.getElementById("heroValue"), layout, effect, 420, 97);
-    effect.particleCount = heroTemporalParticleCount;
+  function drawHeroTemporalStatic(scene) {
+    if (!heroTemporalContext) return;
+    const context = heroTemporalContext;
+    context.clearRect(0, 0, scene.width, scene.height);
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    for (let index = 0; index < scene.particleCount; index += 1) {
+      const particle = heroTemporalParticlePool[index];
+      const quietFactor = heroTemporalQuietFactor(scene, particle.targetX, particle.targetY);
+      if (quietFactor < .01) continue;
+      context.globalAlpha = .68 * quietFactor;
+      context.fillStyle = particle.accent ? "#002fa7" : "#fafaf8";
+      const size = particle.size;
+      context.fillRect(Math.round(particle.targetX - size * .5), Math.round(particle.targetY - size * .5),
+        size, size);
+    }
+    context.restore();
+  }
+
+  function canAnimateHeroTemporal() {
+    return Boolean(heroTemporalCanvas && heroTemporalContext && heroTemporalScene
+      && surfaceActive && !aboutOpen && !document.hidden && !reducedMotion());
   }
 
   function drawHeroTemporal(now) {
     heroTemporalFrame = null;
-    const effect = heroTemporalEffect;
-    if (!effect || !heroTemporalContext || !heroTemporalCanvas
-      || !surfaceActive || aboutOpen || document.hidden || reducedMotion()) {
-      clearHeroTemporalEffect();
+    const scene = heroTemporalScene;
+    if (!scene || !heroTemporalContext || !heroTemporalCanvas) return;
+    if (!canAnimateHeroTemporal()) {
+      drawHeroTemporalStatic(scene);
       return;
     }
 
-    const progress = clamp((now - effect.started) / effect.duration);
-    if (effect.lastFrame && now - effect.lastFrame < 1000 / 24 && progress < 1) {
+    if (heroTemporalLastFrame && now - heroTemporalLastFrame < 1000 / 26) {
       heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
       return;
     }
-    effect.lastFrame = now;
+    const delta = Math.min(4, Math.max(.5, (now - (heroTemporalLastFrame || now)) / (1000 / 60)));
+    heroTemporalLastFrame = now;
 
     const context = heroTemporalContext;
-    context.clearRect(0, 0, effect.width, effect.height);
+    context.clearRect(0, 0, scene.width, scene.height);
 
     context.save();
     context.lineCap = "square";
-    for (let index = 0; index < effect.particleCount; index += 1) {
+    context.globalCompositeOperation = "source-over";
+    for (let index = 0; index < scene.particleCount; index += 1) {
       const particle = heroTemporalParticlePool[index];
-      const localProgress = clamp((progress - particle.delay) / Math.max(.01, 1 - particle.delay));
-      const envelope = Math.sin(Math.PI * localProgress);
-      const previousProgress = Math.max(0, localProgress - .065);
-      const previousEnvelope = Math.sin(Math.PI * previousProgress);
-      const wobble = Math.sin((localProgress * 2.6 + particle.phase) * Math.PI * 2) * envelope * 2.1;
-      const previousWobble = Math.sin((previousProgress * 2.6 + particle.phase) * Math.PI * 2)
-        * previousEnvelope * 2.1;
-      const x = particle.targetX + particle.driftX * envelope - particle.driftY * wobble * .08;
-      const y = particle.targetY + particle.driftY * envelope + particle.driftX * wobble * .08;
-      const previousX = particle.targetX + particle.driftX * previousEnvelope
-        - particle.driftY * previousWobble * .08;
-      const previousY = particle.targetY + particle.driftY * previousEnvelope
-        + particle.driftX * previousWobble * .08;
-      const alpha = (.20 + particle.brightness * .68) * Math.pow(1 - progress, .48)
-        * (.42 + envelope * .58);
+      if (particle.z > 0) {
+        particle.z = Math.max(0, particle.z - particle.speed * delta);
+      } else {
+        particle.hold += delta;
+        if (particle.hold >= particle.holdMax) {
+          particle.z = 1;
+          particle.hold = 0;
+          particle.holdMax = 58 + temporalNoise(now * .001 + index * 7.71) * 150;
+        }
+      }
+
+      const projection = 1 / (1 + particle.z * 2.55);
+      const previousProjection = 1 / (1 + Math.min(1, particle.z + particle.speed * delta * 2.7) * 2.55);
+      const x = scene.originX + (particle.targetX - scene.originX) * projection;
+      const y = scene.originY + (particle.targetY - scene.originY) * projection;
+      const previousX = scene.originX + (particle.targetX - scene.originX) * previousProjection;
+      const previousY = scene.originY + (particle.targetY - scene.originY) * previousProjection;
+      const quietFactor = Math.min(
+        heroTemporalQuietFactor(scene, previousX, previousY),
+        heroTemporalQuietFactor(scene, (x + previousX) * .5, (y + previousY) * .5),
+        heroTemporalQuietFactor(scene, x, y),
+        heroTemporalQuietFactor(scene, particle.targetX, particle.targetY),
+      );
+      const alpha = (particle.z > 0 ? .09 + .74 * (1 - particle.z) : .82) * quietFactor;
       if (alpha < .012) continue;
 
       context.globalAlpha = alpha;
-      context.strokeStyle = particle.accent ? "#002fa7" : "#0a0a0a";
-      context.fillStyle = particle.accent ? "#002fa7" : "#0a0a0a";
+      context.strokeStyle = particle.accent ? "#002fa7" : "#fafaf8";
+      context.fillStyle = particle.accent ? "#002fa7" : "#fafaf8";
       context.lineWidth = particle.size;
       context.beginPath();
       context.moveTo(previousX, previousY);
       context.lineTo(x, y);
       context.stroke();
-      context.fillRect(Math.round(x - particle.size * .5), Math.round(y - particle.size * .5),
-        particle.size, particle.size);
+      if (particle.z < .12) {
+        context.globalAlpha = Math.max(context.globalAlpha, .66 * quietFactor);
+        context.fillRect(Math.round(particle.targetX - particle.size * .5),
+          Math.round(particle.targetY - particle.size * .5), particle.size, particle.size);
+      }
     }
     context.restore();
-
-    if (progress < 1) {
-      heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
-    } else {
-      context.clearRect(0, 0, effect.width, effect.height);
-      heroTemporalEffect = null;
-      document.querySelector(".hero")?.classList.remove("temporal-active");
-    }
-  }
-
-  function triggerHeroTemporalEffect(originX) {
-    if (!surfaceActive || aboutOpen || document.hidden || reducedMotion()) return;
-    const layout = resizeHeroTemporalCanvas();
-    const titleNode = document.getElementById("heroTitle");
-    const valueNode = document.getElementById("heroValue");
-    if (!layout || (!titleNode && !valueNode)) return;
-    const effect = {
-      started: window.performance.now(),
-      lastFrame: 0,
-      duration: 620,
-      dpr: layout.dpr,
-      width: layout.width,
-      height: layout.height,
-      originX: clamp(originX - layout.rect.left, 0, layout.width),
-      originY: layout.height * .5,
-      seed: window.performance.now() * .001,
-      particleCount: 0,
-    };
-
-    buildHeroTemporalParticles(effect, layout);
-    if (!effect.particleCount) return;
-    heroTemporalEffect = effect;
-    const hero = layout.hero;
-    hero.classList.remove("temporal-active");
-    void hero.offsetWidth;
-    hero.classList.add("temporal-active");
-    if (heroTemporalFrame !== null) window.cancelAnimationFrame(heroTemporalFrame);
     heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
   }
 
-  function clearVisualFeedback() {
-    if (heroFeedbackTimer !== null) {
-      window.clearTimeout(heroFeedbackTimer);
-      heroFeedbackTimer = null;
+  function startHeroTemporalScene() {
+    if (!heroTemporalScene) heroTemporalScene = buildHeroTemporalScene();
+    if (!heroTemporalScene) return;
+    if (!canAnimateHeroTemporal()) {
+      drawHeroTemporalStatic(heroTemporalScene);
+      return;
     }
-    document.querySelector(".hero")?.classList.remove("gesture-active");
-    clearHeroTemporalEffect();
+    if (heroTemporalFrame === null)
+      heroTemporalFrame = window.requestAnimationFrame(drawHeroTemporal);
+  }
+
+  function rebuildHeroTemporalScene() {
+    pauseHeroTemporalScene();
+    heroTemporalScene = buildHeroTemporalScene();
+    startHeroTemporalScene();
+  }
+
+  function clearVisualFeedback() {
     feedbackNodes.forEach((node) => node.classList.remove("feedback"));
     feedbackNodes.clear();
   }
 
   function triggerParameterFeedback(node) {
     if (!surfaceActive || reducedMotion() || !node) return;
-    const hero = document.querySelector(".hero");
-    const field = document.getElementById("heroField");
-    const sourceBox = node.getBoundingClientRect();
-
-    if (hero && field) {
-      const fieldBox = field.getBoundingClientRect();
-      const x = clamp(sourceBox.left + sourceBox.width / 2 - fieldBox.left,
-        10, Math.max(10, fieldBox.width - 10));
-      field.style.setProperty("--gesture-x", `${Math.round(x)}px`);
-      hero.classList.remove("gesture-active");
-      void hero.offsetWidth;
-      hero.classList.add("gesture-active");
-      if (heroFeedbackTimer !== null) window.clearTimeout(heroFeedbackTimer);
-      heroFeedbackTimer = window.setTimeout(() => {
-        hero.classList.remove("gesture-active");
-        heroFeedbackTimer = null;
-      }, 440);
-    }
-
-    triggerHeroTemporalEffect(sourceBox.left + sourceBox.width * .5);
-
     node.classList.remove("feedback");
     void node.offsetWidth;
     node.classList.add("feedback");
@@ -812,11 +844,6 @@
     const valueNode = document.getElementById("heroValue");
     const text = hero.text || "--";
     valueNode.textContent = text;
-    valueNode.dataset.temporalText = text;
-    if (heroTemporalEffect) {
-      const layout = resizeHeroTemporalCanvas();
-      if (layout) buildHeroTemporalParticles(heroTemporalEffect, layout);
-    }
     document.getElementById("heroUnit").textContent = hero.label || "GAIN";
     document.getElementById("heroCue").textContent = hero.id ? `${hero.label || hero.id} / ACTIVE PARAMETER` : "STEREO PROCESSING";
   }
@@ -985,8 +1012,14 @@
         window.cancelAnimationFrame(scopeAnimationFrame);
         scopeAnimationFrame = null;
       }
-      if (!surfaceActive) clearVisualFeedback();
-      if (surfaceActive) scheduleScopeDraw();
+      if (!surfaceActive) {
+        clearVisualFeedback();
+        pauseHeroTemporalScene();
+      }
+      if (surfaceActive) {
+        scheduleScopeDraw();
+        startHeroTemporalScene();
+      }
     });
   }
 
@@ -1004,6 +1037,7 @@
         layer.hidden = true;
         if (lastAboutInvoker) lastAboutInvoker.focus({ preventScroll: true });
         scheduleScopeDraw();
+        startHeroTemporalScene();
       };
       window.clearTimeout(aboutCloseTimer);
       if (reducedMotion()) finishClose();
@@ -1021,6 +1055,7 @@
         window.cancelAnimationFrame(scopeAnimationFrame);
         scopeAnimationFrame = null;
       }
+      pauseHeroTemporalScene();
       void layer.offsetWidth;
       layer.classList.add("is-open");
       close.focus({ preventScroll: true });
@@ -1060,19 +1095,26 @@
     window.addEventListener("pagehide", () => {
       endAllGestures();
       clearVisualFeedback();
+      pauseHeroTemporalScene();
     });
     window.addEventListener("resize", () => {
       scheduleScopeDraw();
       positionParameterHelp();
       clearVisualFeedback();
+      rebuildHeroTemporalScene();
     });
     window.addEventListener("blur", () => hideParameterHelp());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) pauseHeroTemporalScene();
+      else startHeroTemporalScene();
+    });
     document.addEventListener("pointerdown", () => hideParameterHelp(), true);
     document.addEventListener("contextmenu", (event) => event.preventDefault());
     document.addEventListener("dragstart", (event) => event.preventDefault());
     document.addEventListener("dragover", (event) => event.preventDefault());
     document.addEventListener("drop", (event) => event.preventDefault());
     drawScope();
+    rebuildHeroTemporalScene();
 
     if (!hasNativeBridge) {
       document.getElementById("topState").textContent = "STATIC PREVIEW / NO NATIVE BRIDGE";

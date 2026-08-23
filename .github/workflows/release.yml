@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.3.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    name: Verify release version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - id: version
+        name: Match tag to product version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          product_version="$(sed -nE 's/^[[:space:]]*project[[:space:]]*\([[:space:]]*UTT[[:space:]]+VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt | head -n 1)"
+          test -n "$product_version"
+          test "$RELEASE_TAG" = "v$product_version"
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows installer
+    needs: verify-version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Fetch the pinned WebView2 SDK
+        shell: pwsh
+        run: |
+          $packageRoot = Join-Path $env:RUNNER_TEMP "webview2-sdk"
+          $packageDirectory = Join-Path $packageRoot "Microsoft.Web.WebView2.1.0.3485.44"
+          $archive = Join-Path $env:RUNNER_TEMP "Microsoft.Web.WebView2.1.0.3485.44.zip"
+          New-Item -ItemType Directory -Force $packageRoot | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.3485.44" `
+            -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $packageDirectory
+          "WEBVIEW2_PACKAGE_ROOT=$packageRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Configure Release build
+        shell: pwsh
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DJUCE_WEBVIEW2_PACKAGE_LOCATION="$env:WEBVIEW2_PACKAGE_ROOT"
+
+      - name: Build plugin and tests
+        shell: pwsh
+        run: cmake --build build --target UTT_All UTTTests --parallel 2
+
+      - name: Run UTT tests
+        shell: pwsh
+        run: .\build\UTTTests_artefacts\Release\UTTTests.exe
+
+      - name: Build installer and release ZIP
+        shell: pwsh
+        run: .\installer\build-installer.ps1 -DownloadPrerequisites
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: utt-windows-release
+          if-no-files-found: error
+          path: |
+            dist/UTT-*-windows-x64.zip
+            dist/UTT-*-windows-x64.zip.sha256
+
+  macos:
+    name: macOS universal installer
+    needs: verify-version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure universal unsigned Release build
+        shell: bash
+        run: |
+          cmake -S . -B build-mac -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+            -DUTT_BUILD_AUV3=ON
+
+      - name: Build VST3, AU, AUv3 container, Standalone, and tests
+        shell: bash
+        run: cmake --build build-mac --config Release --target UTT_All UTTTests --parallel 2
+
+      - name: Run UTT tests
+        shell: bash
+        run: ./build-mac/UTTTests_artefacts/Release/UTTTests
+
+      - name: Build macOS installer package
+        shell: bash
+        run: bash installer/build-macos-package.sh build-mac
+
+      - name: Upload macOS release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: utt-macos-release
+          if-no-files-found: error
+          path: |
+            dist/UTT-*-macos-universal-unsigned.pkg
+            dist/UTT-*-macos-universal-unsigned.pkg.sha256
+
+  publish:
+    name: Publish GitHub release
+    needs: [verify-version, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*)
+          test "${#assets[@]}" -gt 0
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "UTT $RELEASE_TAG" \
+              --notes-file docs/RELEASE_NOTES.md
+          fi

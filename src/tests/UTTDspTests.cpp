@@ -844,6 +844,8 @@ public:
         const auto cmake = readSource ("CMakeLists.txt");
         const auto installer = readSource ("installer/Installer.cs");
         const auto installerBuild = readSource ("installer/build-installer.ps1");
+        const auto macInstallerBuild = readSource ("installer/build-macos-package.sh");
+        const auto releaseWorkflow = readSource (".github/workflows/release.yml");
 
         beginTest("offline assets, CSP and BinaryData whitelist");
         expect (html.isNotEmpty(), "index.html must exist");
@@ -957,22 +959,26 @@ public:
         expect (css.contains (".parameter-help") && css.contains ("position: fixed")
                     && css.contains ("pointer-events: none"),
                 "parameter help must float above the grid without intercepting controls");
-        expect (html.contains ("id=\"heroField\"")
+        expect (! html.contains ("id=\"heroField\"")
                     && script.contains ("triggerParameterFeedback")
-                    && css.contains (".hero.gesture-active")
+                    && css.contains ("@keyframes control-feedback")
                     && css.contains ("prefers-reduced-motion: reduce"),
-                "local control feedback must be bounded and respect reduced motion");
+                "local control feedback must remain bounded without restoring the old Hero effect");
         expect (html.contains ("id=\"heroTemporal\"")
                     && html.contains ("id=\"heroTitle\"")
-                    && script.contains ("triggerHeroTemporalEffect")
+                    && script.contains ("heroTemporalWordmarkPaths")
+                    && script.contains ("new Path2D(path)")
+                    && script.contains ("buildHeroTemporalScene")
                     && script.contains ("drawHeroTemporal")
-                    && script.contains ("clearHeroTemporalEffect")
-                    && script.contains ("1000 / 24")
+                    && script.contains ("pauseHeroTemporalScene")
+                    && script.contains ("startHeroTemporalScene")
+                    && script.contains ("Math.min(1450")
                     && script.contains ("heroTemporalParticlePool")
-                    && script.contains ("sampleHeroTemporalText"),
-                "Hero text must use a capped, finite Canvas particle effect sampled from the glyphs");
-        expect (css.contains ("grid-template-rows: 38px 92px minmax(0, 1fr) 58px 22px"),
-                "the default surface must retain its compact fixed chrome layout");
+                    && script.contains ("document.hidden"),
+                "Hero wordmark must use a capped path-sampled Canvas particle field with lifecycle guards");
+        expect (css.contains ("grid-template-rows: 38px 124px minmax(0, 1fr) 58px 22px")
+                    && css.contains ("grid-template-rows: 36px 104px minmax(0, 1fr) 52px 20px"),
+                "the default and compact surfaces must retain fixed chrome layouts");
         expect (html.contains ("openFAD / UTT") && html.contains ("openFAD AUDIO TOOLS")
                     && html.contains ("<dd>openFAD</dd>"),
                 "About must identify the openFAD product family");
@@ -1001,8 +1007,30 @@ public:
         expect (installerBuild.contains ("https://go.microsoft.com/fwlink/p/?LinkId=2124701")
                     && installerBuild.contains ("https://aka.ms/vs/17/release/vc_redist.x64.exe")
                     && installerBuild.contains ("Get-AuthenticodeSignature")
-                    && installerBuild.contains ("UTT_artefacts\\Release"),
+                    && installerBuild.contains ("UTT_artefacts\\Release")
+                    && installerBuild.contains ("Compress-Archive")
+                    && installerBuild.contains ("releaseArchiveHashPath"),
                 "packaging must verify Microsoft payloads and consume the canonical Release artefacts");
+
+        beginTest ("macOS AUv3 packaging and GitHub release automation remain explicit");
+        expect (cmake.contains ("UTT_BUILD_AUV3")
+                    && cmake.contains ("set(UTT_FORMATS VST3 AU Standalone)")
+                    && cmake.contains ("list(APPEND UTT_FORMATS AUv3)"),
+                "macOS must build an AUv3 extension alongside the installable Standalone container");
+        expect (macInstallerBuild.contains ("pkgbuild")
+                    && macInstallerBuild.contains ("/Library/Audio/Plug-Ins/VST3")
+                    && macInstallerBuild.contains ("/Library/Audio/Plug-Ins/Components")
+                    && macInstallerBuild.contains ("/Applications")
+                    && macInstallerBuild.contains ("Contents/PlugIns/UTT.appex")
+                    && macInstallerBuild.contains ("lipo -archs")
+                    && macInstallerBuild.contains ("codesign --verify --deep --strict"),
+                "macOS package must install VST3, AU and the universal AUv3 container app");
+        expect (releaseWorkflow.contains ("windows-2022")
+                    && releaseWorkflow.contains ("macos-14")
+                    && releaseWorkflow.contains ("UTT_BUILD_AUV3=ON")
+                    && releaseWorkflow.contains ("UTT_All UTTTests")
+                    && releaseWorkflow.contains ("gh release create"),
+                "tag workflow must build, test and publish both platform release assets");
     }
 };
 

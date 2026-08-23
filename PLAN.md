@@ -7,7 +7,8 @@
 
 UTT 是一款音频工具集合型 VST3 插件（JUCE 8.0.13 / C++17 / GPLv3），面向
 House/Techno 制作与混音的立体声通道条工具。v0.3.0 完成 DSP 正确性重写与
-WebView2 纸面仪器 UI，并为 Apple AUv3 车道完成代码与构建预备。
+WebView2 纸面仪器 UI；v0.3.1 新增粒子文字 Hero、发行安装器与 GitHub 跨平台
+构建发布车道。
 
 - 参数合同真源：`config/parameters-v2.json`（17+1 参数，ID 顺序为发布 ABI）
 - 标识符冻结合同：`docs/IDENTIFIERS.md`
@@ -21,7 +22,7 @@ WebView2 纸面仪器 UI，并为 Apple AUv3 车道完成代码与构建预备�
 | 许可证 | GPLv3 |
 | 构建 | CMake ≥3.22 + Ninja + MSVC 2022（需 vcvars64 环境） |
 | GUI | WebView2 离线内嵌（`resources/ui/`，juce_add_binary_data 打包；无运行时时降级原生极简面板） |
-| 插件格式 | Windows/Linux: VST3 + Standalone；macOS: VST3 + AU + AUv3；iOS: AUv3 + Standalone |
+| 插件格式 | Windows/Linux: VST3 + Standalone；macOS: VST3 + AU + Standalone（内嵌 AUv3）；iOS: AUv3 + Standalone |
 | 测试 | juce::UnitTest 控制台跑（`UTTTests`，12830 断言） |
 | 验证 | pluginval strictness 10（系统安装副本） |
 
@@ -72,14 +73,23 @@ I/0 机械开关、旋钮完整协议（拖拽 320px、Shift 1600px、滚轮 0.0
 | D3 pluginval strictness 10 | ✅ | 4 次运行 exit=0（含 VST3 validator、自动化测试） |
 | D4/D5 清理 + 0.3.0 + 文档 | ✅ | commit dd2e8fa；-95MB 垃圾、build/ 解除跟踪 |
 
+## v0.3.1 发行车道（2026-08-23）
+
+| 项 | 状态 | 证据/边界 |
+|---|---|---|
+| Windows release ZIP | 本地待打包 | `build-installer.ps1` 从 canonical Release 产物生成 Setup、VST3、Standalone、内外 SHA-256 |
+| macOS universal PKG | CI 待执行 | `pkgbuild` 安装 VST3、AU 与包含 AUv3 的 `UTT.app`；打包前检查双架构 |
+| GitHub Release | 待推送 tag | `vX.Y.Z` 自动构建 Windows/macOS、运行 `UTTTests` 并上传资产 |
+| Apple Developer ID/notarization | 未完成 | CI 对内部 bundle 做 ad-hoc 签名；PKG 仍不是 Developer ID 签名且未 notarize |
+
 ## 明确未完成 / 未验证（后续计划）
 
 | 项 | 层级 | 说明 |
 |---|---|---|
 | DAW 实机手测 | DAW-tested | Live/REAPER 中开编辑器、跑自动化、长时稳定性；本机无 DAW 自动化路径 |
 | Windows 安装器冷装 | clean-VM-tested | v0.3 单文件安装器已内嵌 WebView2 Evergreen Offline x64 + VC++ x64，签名/内嵌 VST3 已验证；断网 VM 冷装仍未执行 |
-| Apple 全部项 | device-tested | 见 docs/APPLE_LANE.md §4 清单（auval、AUv3 注册、宿主矩阵、内存警告） |
-| 发布产物 | release-ready | VST3、Standalone、Setup 与 SHA-256 已构建；产品代码签名、notarization、Release Notes 仍未完成 |
+| Apple 宿主/设备项 | device-tested | 见 docs/APPLE_LANE.md §4 清单（auval、AUv3 注册、宿主矩阵、内存警告） |
+| 发布产物 | CI-ready | Windows/macOS 资产由 tag workflow 生成；产品代码签名、notarization、Apple host 验证仍未完成 |
 
 ## 构建速查
 
@@ -89,5 +99,5 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target UTT_All UTTTests
 ./build/UTTTests_artefacts/Release/UTTTests.exe
 # 安装副本验证
-./tools/pluginval/pluginval.exe --validate "C:\Program Files\Common Files\VST3\UTT.vst3" --strictness 10
+./tools/pluginval/pluginval.exe --validate "C:\Program Files\Common Files\VST3\UTT.vst3" --strictness-level 10
 ```
