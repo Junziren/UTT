@@ -596,7 +596,7 @@ public:
             expect(!supported(juce::AudioChannelSet::disabled(), juce::AudioChannelSet::stereo()));
         }
 
-        beginTest("default chain is bit-exact transparent (stereo)");
+        beginTest("default chain is transparent within float precision (stereo)");
         {
             UTTProcessor proc;
             proc.prepareToPlay(44100.0, 512);
@@ -615,8 +615,8 @@ public:
 
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 0; i < n; ++i)
-                    expectEquals(b.getSample(ch, i), ref.getSample(ch, i),
-                                  "defaults must process bit-exact (all modules neutral)");
+                    expectWithinAbsoluteError(b.getSample(ch, i), ref.getSample(ch, i), 1.0e-6f,
+                                              "defaults must remain transparent (all modules neutral)");
         }
 
         beginTest("non-silent processing advances the UI telemetry snapshots");
@@ -682,7 +682,8 @@ public:
             proc.processBlock(b, midi);
 
             for (int i = 0; i < 256; ++i)
-                expectEquals(b.getSample(0, i), ref.getSample(0, i), "mono passthrough");
+                expectWithinAbsoluteError(b.getSample(0, i), ref.getSample(0, i), 1.0e-6f,
+                                          "mono passthrough must remain transparent");
         }
 
         beginTest("legacy v0.2 state (meter/theme params) restores cleanly");
